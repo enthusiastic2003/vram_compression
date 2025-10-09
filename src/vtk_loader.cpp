@@ -1,4 +1,4 @@
-#include "vtk_loader.h"
+#include "vtk_loader.hpp"
 
 void VoxelLoader::reset() {
     m_data.clear();
