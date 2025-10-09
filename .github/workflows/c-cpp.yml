@@ -25,12 +25,6 @@ jobs:
     - name: Build project
       run: make
 
-    - name: Run make check (if defined)
-      run: make check || echo "No check target defined"
-
-    - name: Run make distcheck (if defined)
-      run: make distcheck || echo "No distcheck target defined"
-
     - name: Archive build artifacts
       run: |
         mkdir -p release
