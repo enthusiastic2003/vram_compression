@@ -1,13 +1,12 @@
 #include <iostream>
 #include "renderer.hpp"
-
 // Define this before including GLFW
 #include <GLFW/glfw3.h>
 // ImGui includes
 #include "imgui.h"
 #include "backends/imgui_impl_glfw.h"
 #include "backends/imgui_impl_opengl3.h"
-
+#include "vtk_loader.hpp"
 Renderer::Renderer() : window(nullptr) {
     // Constructor now ensures 'window' is safely initialized
 }
@@ -29,7 +28,16 @@ void Renderer::glfw_error_callback(int error, const char* description)
     std::cerr << "GLFW Error " << error << ": " << description << std::endl;
 }
 
-bool Renderer::initialize() {
+bool Renderer::initialize(std::shared_ptr<VoxelLoader> loader) {
+    // Voxel Processing
+    m_voxelLoader = loader;
+    if (m_voxelLoader->getTotalPoints() == 0) {
+        std::cerr << "Voxel data is empty or not loaded properly.\n";
+        return false;
+    }
+
+    
+
     // Initialization code (e.g., setting up OpenGL context, shaders, etc.)
    glfwSetErrorCallback(glfw_error_callback);
     if (!glfwInit())

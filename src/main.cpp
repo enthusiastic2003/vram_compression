@@ -1,21 +1,17 @@
-#include <glad/glad.h>
-#include <GLFW/glfw3.h>
 #include <iostream>
 #include "renderer.hpp"
-// ImGui includes
-#include "imgui.h"
-#include "backends/imgui_impl_glfw.h"
-#include "backends/imgui_impl_opengl3.h"
-
-static void glfw_error_callback(int error, const char* description)
-{
-    std::cerr << "GLFW Error " << error << ": " << description << std::endl;
-}
-
+#include "vtk_loader.hpp"
+#include <memory>
 int main()
 {
+    auto voxelData = std::make_shared<VoxelLoader>();
+    if (!voxelData->loadVTK("data/vtk/bonsai_256x256x256_uint8.vtk")) {
+        std::cerr << "Failed to load VTK file\n";
+        return -1;
+    }
+
     Renderer renderer;
-    if (renderer.initialize() == false) {
+    if (renderer.initialize(voxelData) == false) {
         std::cerr << "Failed to initialize renderer\n";
         return -1;
     }
