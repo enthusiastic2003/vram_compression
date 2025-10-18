@@ -62,12 +62,16 @@ bool VoxelLoader::loadVTK(const std::string& filepath) {
             } else if (keyword == "LOOKUP_TABLE") {
                 break; // End of header for binary ASCII SCALARS
             } else if (keyword == "FIELD") {
+                std::cout << "Loading Field data: " << ss.str() << std::endl;
                 // Handle FIELD data (e.g., double arrays)
                 std::string fieldName;
                 int numComponents, numTuples;
                 ss >> fieldName >> numComponents >> numTuples;
+                std::cout << "Field Name: " << fieldName 
+                          << ", Components: " << numComponents 
+                          << ", Tuples: " << numTuples << std::endl;
                 m_dataType = "double"; // Override for FIELD double data
-                break;
+                
             }
         }
 
@@ -88,14 +92,47 @@ bool VoxelLoader::loadVTK(const std::string& filepath) {
         if (m_dataType == "unsigned_char" || m_dataType == "uint8") {
             m_data.resize(m_totalPoints);
             file.read(reinterpret_cast<char*>(m_data.data()), m_totalPoints);
-        } else if (m_dataType == "unsigned_short") {
+        } else if (m_dataType == "unsigned_short" || m_dataType == "uint16") {
             std::vector<unsigned short> short_data(m_totalPoints);
             file.read(reinterpret_cast<char*>(short_data.data()), m_totalPoints * sizeof(unsigned short));
-            for (auto& val : short_data) byteSwap16(val);
-            // Convert to unsigned char if desired
+
+            // Make sure to byte-swap if necessary (assuming you have this logic)
+            for (auto& val : short_data) {
+                byteSwap16(val);
+            }
+
+            // --- Start of Normalization Logic ---
+
+            // 1. Find the actual minimum and maximum values in the dataset.
+            if (short_data.empty()) {
+                std::cerr << "Error: No data to normalize." << std::endl;
+                return false; // Or handle the error appropriately
+            }
+            unsigned short min_val = short_data[0];
+            unsigned short max_val = short_data[0];
+            for (const auto& val : short_data) {
+                if (val < min_val) min_val = val;
+                if (val > max_val) max_val = val;
+            }
+
+            // 2. Prepare for scaling.
             m_data.resize(m_totalPoints);
-            for (size_t i = 0; i < m_totalPoints; ++i)
-                m_data[i] = static_cast<unsigned char>(short_data[i]);
+            double range = static_cast<double>(max_val - min_val);
+            
+            // Avoid division by zero if all values in the dataset are the same.
+            if (range < 1e-6) { 
+                range = 1.0;
+            }
+
+            // 3. Scale each value to the 0-255 range.
+            for (size_t i = 0; i < m_totalPoints; ++i) {
+                // First, calculate the value's position as a percentage (0.0 to 1.0) within its original range.
+                double normalized_val = (static_cast<double>(short_data[i] - min_val)) / range;
+                
+                // Then, scale that percentage to the target range of an unsigned char.
+                m_data[i] = static_cast<unsigned char>(normalized_val * 255.0);
+            }
+            // --- End of Normalization Logic ---
         } else if (m_dataType == "double") {
             std::vector<double> dbl_data(m_totalPoints);
             file.read(reinterpret_cast<char*>(dbl_data.data()), m_totalPoints * sizeof(double));
@@ -148,6 +185,3 @@ bool VoxelLoader::loadVTK(const std::string& filepath) {
     
     return true;
 }
-
-
-

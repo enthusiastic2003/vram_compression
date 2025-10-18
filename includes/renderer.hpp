@@ -21,6 +21,7 @@ private:
     int height_;
     const char* title_;
     GLFWwindow* window_;
+    GLuint m_volumeTextureID; // <-- Add this
 public:
     Renderer(int width, int height, const char* title)
         : width_(width), height_(height), title_(title),

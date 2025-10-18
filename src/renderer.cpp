@@ -157,9 +157,44 @@ bool Renderer::initialize(std::shared_ptr<VoxelLoader> loader) {
 
     glBindBuffer(GL_ARRAY_BUFFER, m_cubeVBO);
     glBufferData(GL_ARRAY_BUFFER, sizeof(vertices), vertices, GL_STATIC_DRAW);
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float), (void*)0);
+
+    // In Renderer.cpp, inside initialize()
+// ... after setting up VAO/VBO
+
+    // Get data from your loader
+    const auto& dims = m_voxelLoader->getDimensions();
+    // Get a pointer to the underlying vector data returned by the loader
+    const auto& data_vec = m_voxelLoader->getData();
+    const unsigned char* data_ptr = data_vec.data();
+
+    glGenTextures(1, &m_volumeTextureID);
+    glBindTexture(GL_TEXTURE_3D, m_volumeTextureID);
+
+    // Set texture parameters (these are good)
+    glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_WRAP_R, GL_CLAMP_TO_EDGE);
+
+    // --- CORRECTED TEXTURE UPLOAD ---
+    glTexImage3D(
+        GL_TEXTURE_3D,
+        0,
+        GL_R8,             // Internal format on GPU: 8-bit single channel
+        dims.x,
+        dims.y,
+        dims.z,
+        0,
+        GL_RED,            // Format of source data: single channel
+        GL_UNSIGNED_BYTE,  // Type of source data: unsigned char
+        data_ptr
+    );
+
+    glBindTexture(GL_TEXTURE_3D, 0);
 
     // Position attribute
-    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float), (void*)0);
     glEnableVertexAttribArray(0);
 
     return true;
@@ -173,18 +208,41 @@ void Renderer::renderScene() {
     // 2. Use the shader program
     m_shader.use();
 
-    // 3. Set up matrices
-    glm::mat4 model = glm::mat4(1.0f);
-    glm::mat4 view = camera_.getViewMatrix();
-    glm::mat4 projection = camera_.getProjectionMatrix((float)width_ / (float)height_);
-    
-    m_shader.setMat4("model", model);
-    m_shader.setMat4("view", view);
-    m_shader.setMat4("projection", projection);
+    // Set camera and rendering uniforms
+    m_shader.setMat4("view", camera_.getViewMatrix());
+    m_shader.setMat4("projection", camera_.getProjectionMatrix( (float)width_ / (float)height_));
+    m_shader.setMat4("model", glm::mat4(1.0f));
+    m_shader.setFloat("u_stepSize", 0.005f);
+    m_shader.setInt("u_marchSteps", 256);
+    m_shader.setVec3("u_cameraPosition", camera_.getPosition().x, camera_.getPosition().y, camera_.getPosition().z);
 
-    // 4. Draw the cube
+    // Bind the 3D Volume Texture to texture unit 0
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_3D, m_volumeTextureID);
+    m_shader.setInt("u_volumeTexture", 0);
+
+    // --- MODIFICATIONS START HERE ---
+
+    // 3. Set OpenGL state for transparent volume rendering
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA); // Standard alpha blending
+    glDisable(GL_CULL_FACE); // This is the key: render both front and back faces
+    glDepthMask(GL_FALSE);   // Don't let the volume write to the depth buffer
+
+    // 4. Bind the cube's VAO and draw it
     glBindVertexArray(m_cubeVAO);
     glDrawArrays(GL_TRIANGLES, 0, 36);
+
+    // 5. Restore OpenGL state to default
+    glDepthMask(GL_TRUE);    // Re-enable depth writing
+    glEnable(GL_CULL_FACE);  // Re-enable face culling for other objects (like ImGui)
+    glDisable(GL_BLEND);
+
+    // --- MODIFICATIONS END HERE ---
+
+    // 6. Unbind everything
+    glBindVertexArray(0);
+    glBindTexture(GL_TEXTURE_3D, 0); // Good practice to unbind texture
 }
 
 void Renderer::renderUI() {
