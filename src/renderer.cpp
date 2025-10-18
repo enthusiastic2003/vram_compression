@@ -7,9 +7,12 @@
 #include "backends/imgui_impl_glfw.h"
 #include "backends/imgui_impl_opengl3.h"
 #include "vtk_loader.hpp"
-Renderer::Renderer() : window(nullptr) {
-    // Constructor now ensures 'window' is safely initialized
-}
+
+// Renderer::Renderer(int width, int height, const char* title)
+//     : width_(width), height_(height), title_(title),
+//       window_(nullptr),
+//       camera_(3.0f, 45.0f)  // distance=3, fov=45
+// {}
 
 // The destructor is the best place for cleanup code.
 Renderer::~Renderer() {
@@ -35,8 +38,6 @@ bool Renderer::initialize(std::shared_ptr<VoxelLoader> loader) {
         std::cerr << "Voxel data is empty or not loaded properly.\n";
         return false;
     }
-
-    
 
     // Initialization code (e.g., setting up OpenGL context, shaders, etc.)
    glfwSetErrorCallback(glfw_error_callback);
@@ -69,6 +70,13 @@ bool Renderer::initialize(std::shared_ptr<VoxelLoader> loader) {
         return false;
     }
 
+    // Set up window user pointer and callbacks
+    glfwSetWindowUserPointer(window, this);
+    glfwSetMouseButtonCallback(window, mouse_button_callback);
+    glfwSetCursorPosCallback(window, cursor_position_callback);
+    glfwSetScrollCallback(window, scroll_callback);
+    glfwSetKeyCallback(window, defaultKeyCallback);
+
     // Setup Dear ImGui context
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
@@ -92,17 +100,91 @@ bool Renderer::initialize(std::shared_ptr<VoxelLoader> loader) {
     ImGui_ImplGlfw_InitForOpenGL(window, true);
     ImGui_ImplOpenGL3_Init("#version 330");
 
+    // Create and compile our GLSL program from the shaders
+    m_shader = Shader("shaders/proxy.vert", "shaders/proxy.fs");
+    m_shader.compileAndLink();
+
+    // A simple cube
+    float vertices[] = {
+        // positions         
+        -0.5f, -0.5f, -0.5f, 
+         0.5f, -0.5f, -0.5f,  
+         0.5f,  0.5f, -0.5f,  
+         0.5f,  0.5f, -0.5f,  
+        -0.5f,  0.5f, -0.5f, 
+        -0.5f, -0.5f, -0.5f, 
+
+        -0.5f, -0.5f,  0.5f, 
+         0.5f, -0.5f,  0.5f,  
+         0.5f,  0.5f,  0.5f,  
+         0.5f,  0.5f,  0.5f,  
+        -0.5f,  0.5f,  0.5f, 
+        -0.5f, -0.5f,  0.5f, 
+
+        -0.5f,  0.5f,  0.5f, 
+        -0.5f,  0.5f, -0.5f, 
+        -0.5f, -0.5f, -0.5f, 
+        -0.5f, -0.5f, -0.5f, 
+        -0.5f, -0.5f,  0.5f, 
+        -0.5f,  0.5f,  0.5f, 
+
+         0.5f,  0.5f,  0.5f, 
+         0.5f,  0.5f, -0.5f, 
+         0.5f, -0.5f, -0.5f, 
+         0.5f, -0.5f, -0.5f, 
+         0.5f, -0.5f,  0.5f, 
+         0.5f,  0.5f,  0.5f, 
+
+        -0.5f, -0.5f, -0.5f, 
+         0.5f, -0.5f, -0.5f, 
+         0.5f, -0.5f,  0.5f, 
+         0.5f, -0.5f,  0.5f, 
+        -0.5f, -0.5f,  0.5f, 
+        -0.5f, -0.5f, -0.5f, 
+
+        -0.5f,  0.5f, -0.5f, 
+         0.5f,  0.5f, -0.5f, 
+         0.5f,  0.5f,  0.5f, 
+         0.5f,  0.5f,  0.5f, 
+        -0.5f,  0.5f,  0.5f, 
+        -0.5f,  0.5f, -0.5f, 
+    };
+
+    glGenVertexArrays(1, &m_cubeVAO);
+    glGenBuffers(1, &m_cubeVBO);
+
+    glBindVertexArray(m_cubeVAO);
+
+    glBindBuffer(GL_ARRAY_BUFFER, m_cubeVBO);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(vertices), vertices, GL_STATIC_DRAW);
+
+    // Position attribute
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float), (void*)0);
+    glEnableVertexAttribArray(0);
 
     return true;
-
 }
 
 void Renderer::renderScene() {
     // 1. Clear the screen for the new frame
     glClearColor(0.1f, 0.1f, 0.12f, 1.0f);
-    glClear(GL_COLOR_BUFFER_BIT);
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT); 
 
-    // 2. All your future scene rendering code (e.g., ray marching) will go here.
+    // 2. Use the shader program
+    m_shader.use();
+
+    // 3. Set up matrices
+    glm::mat4 model = glm::mat4(1.0f);
+    glm::mat4 view = camera_.getViewMatrix();
+    glm::mat4 projection = camera_.getProjectionMatrix((float)width_ / (float)height_);
+    
+    m_shader.setMat4("model", model);
+    m_shader.setMat4("view", view);
+    m_shader.setMat4("projection", projection);
+
+    // 4. Draw the cube
+    glBindVertexArray(m_cubeVAO);
+    glDrawArrays(GL_TRIANGLES, 0, 36);
 }
 
 void Renderer::renderUI() {
@@ -134,10 +216,21 @@ void Renderer::renderUI() {
 }
 
 void Renderer::run() {
+    float lastFrame = 0.0f;
     // This is the main application loop.
     while (!glfwWindowShouldClose(window)) {
+        float currentFrame = glfwGetTime();
+        float deltaTime = currentFrame - lastFrame;
+        lastFrame = currentFrame;
+
         // Handle user input and OS events
         glfwPollEvents();
+
+        // Process keyboard input for camera
+        if (glfwGetKey(window, GLFW_KEY_UP) == GLFW_PRESS)
+            camera_.onKeyboard(GLFW_KEY_UP, GLFW_PRESS, deltaTime);
+        if (glfwGetKey(window, GLFW_KEY_DOWN) == GLFW_PRESS)
+            camera_.onKeyboard(GLFW_KEY_DOWN, GLFW_PRESS, deltaTime);
 
         // Render the main 3D scene
         renderScene();
@@ -147,5 +240,58 @@ void Renderer::run() {
 
         // Swap the front and back buffers to display the rendered frame
         glfwSwapBuffers(window);
+    }
+}
+
+void Renderer::mouse_button_callback(GLFWwindow* window, int button, int action, int mods) {
+    Renderer* renderer = static_cast<Renderer*>(glfwGetWindowUserPointer(window));
+    if (renderer)
+        renderer->handleMouseButton(button, action, mods);
+}
+
+void Renderer::cursor_position_callback(GLFWwindow* window, double xpos, double ypos) {
+    Renderer* renderer = static_cast<Renderer*>(glfwGetWindowUserPointer(window));
+    if (renderer)
+        renderer->handleCursorPosition(xpos, ypos);
+}
+
+void Renderer::scroll_callback(GLFWwindow* window, double xoffset, double yoffset) {
+    Renderer* renderer = static_cast<Renderer*>(glfwGetWindowUserPointer(window));
+    if (renderer)
+        renderer->handleScroll(xoffset, yoffset);
+}
+
+void Renderer::defaultKeyCallback(GLFWwindow* window, int key, int scancode, int action, int mods) {
+    Renderer* renderer = static_cast<Renderer*>(glfwGetWindowUserPointer(window));
+    if (renderer)
+        renderer->handleKey(key, scancode, action, mods);
+}
+
+void Renderer::handleMouseButton(int button, int action, int mods) {
+    ImGuiIO& io = ImGui::GetIO();
+    if (io.WantCaptureMouse) return;
+
+    double xpos, ypos;
+    glfwGetCursorPos(window, &xpos, &ypos);
+    camera_.onMouseButton(button, action, xpos, ypos);
+}
+
+void Renderer::handleCursorPosition(double xpos, double ypos) {
+    ImGuiIO& io = ImGui::GetIO();
+    if (io.WantCaptureMouse) return;
+
+    camera_.onMouseMove(xpos, ypos);
+}
+
+void Renderer::handleScroll(double xoffset, double yoffset) {
+    ImGuiIO& io = ImGui::GetIO();
+    if (io.WantCaptureMouse) return;
+
+    camera_.onScroll(yoffset);
+}
+
+void Renderer::handleKey(int key, int scancode, int action, int mods) {
+    if (key == GLFW_KEY_ESCAPE && action == GLFW_PRESS) {
+        glfwSetWindowShouldClose(window, GLFW_TRUE);
     }
 }
