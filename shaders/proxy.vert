@@ -17,6 +17,10 @@ void main() {
     // Pass the world position of the fragment to the next stage
     fragWorldPos = (model * vec4(aPos, 1.0)).xyz;
     
-    // Convert object position to [0, 1] texture coordinate and pass it
-    texCoord = aPos;
-}
+        // Convert object position to [0, 1] texture coordinate and pass it
+    
+        texCoord = aPos + 0.5;
+    
+    }
+    
+    

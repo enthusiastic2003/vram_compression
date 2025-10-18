@@ -63,6 +63,7 @@ bool Renderer::initialize(std::shared_ptr<VoxelLoader> loader) {
 
     glfwMakeContextCurrent(window);
     glfwSwapInterval(1); // Enable vsync
+    
 
     if (!gladLoadGLLoader((GLADloadproc)glfwGetProcAddress))
     {
@@ -70,8 +71,14 @@ bool Renderer::initialize(std::shared_ptr<VoxelLoader> loader) {
         return false;
     }
 
+    // --- NEW ---
+    // Get initial framebuffer size and set the viewport
+    glfwGetFramebufferSize(window, &width_, &height_);
+    glViewport(0, 0, width_, height_);
+
     // Set up window user pointer and callbacks
     glfwSetWindowUserPointer(window, this);
+    glfwSetFramebufferSizeCallback(window, framebuffer_size_callback);
     glfwSetMouseButtonCallback(window, mouse_button_callback);
     glfwSetCursorPosCallback(window, cursor_position_callback);
     glfwSetScrollCallback(window, scroll_callback);
@@ -352,4 +359,22 @@ void Renderer::handleKey(int key, int scancode, int action, int mods) {
     if (key == GLFW_KEY_ESCAPE && action == GLFW_PRESS) {
         glfwSetWindowShouldClose(window, GLFW_TRUE);
     }
+}
+
+// Add this static callback function with the others
+void Renderer::framebuffer_size_callback(GLFWwindow* window, int width, int height) {
+    Renderer* renderer = static_cast<Renderer*>(glfwGetWindowUserPointer(window));
+    if (renderer) {
+        renderer->handleFramebufferSizeChange(width, height);
+    }
+}
+
+// Add this handler method with the other handlers
+void Renderer::handleFramebufferSizeChange(int width, int height) {
+    // This is the crucial line!
+    glViewport(0, 0, width, height);
+
+    // Update our stored width and height
+    width_ = width;
+    height_ = height;
 }
