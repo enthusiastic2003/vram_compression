@@ -22,6 +22,13 @@ private:
     const char* title_;
     GLFWwindow* window_;
     GLuint m_volumeTextureID; // <-- Add this
+
+    // Transfer function parameters
+    glm::vec3 m_color1 = glm::vec3(0.1f, 0.2f, 1.0f);
+    glm::vec3 m_color2 = glm::vec3(1.0f, 1.0f, 1.0f);
+    float m_alpha1 = 0.01f;
+    float m_alpha2 = 0.4f;
+    float m_threshold = 0.1f;
 public:
     Renderer(int width, int height, const char* title)
         : width_(width), height_(height), title_(title),

@@ -223,6 +223,13 @@ void Renderer::renderScene() {
     m_shader.setInt("u_marchSteps", 256);
     m_shader.setVec3("u_cameraPosition", camera_.getPosition().x, camera_.getPosition().y, camera_.getPosition().z);
 
+    // Set transfer function uniforms
+    m_shader.setVec3("u_color1", m_color1.x, m_color1.y, m_color1.z);
+    m_shader.setVec3("u_color2", m_color2.x, m_color2.y, m_color2.z);
+    m_shader.setFloat("u_alpha1", m_alpha1);
+    m_shader.setFloat("u_alpha2", m_alpha2);
+    m_shader.setFloat("u_threshold", m_threshold);
+
     // Bind the 3D Volume Texture to texture unit 0
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_3D, m_volumeTextureID);
@@ -259,12 +266,15 @@ void Renderer::renderUI() {
     ImGui::NewFrame();
 
     // 2. Build your UI here
-    // Example: Show a demo window
-    static bool show_demo = true;
-    if (show_demo) {
-        ImGui::ShowDemoWindow(&show_demo);
-    }
-    // You can add other ImGui windows or controls here.
+    ImGui::Begin("Transfer Function Editor");
+    ImGui::ColorEdit3("Start Color", &m_color1.x);
+    ImGui::ColorEdit3("End Color", &m_color2.x);
+    ImGui::SliderFloat("Start Alpha", &m_alpha1, 0.0f, 1.0f);
+    ImGui::SliderFloat("End Alpha", &m_alpha2, 0.0f, 1.0f);
+    ImGui::SliderFloat("Threshold", &m_threshold, 0.0f, 1.0f);
+    ImGui::End();
+
+    camera_.renderImGuiControls();
 
     // 3. Render the ImGui frame
     ImGui::Render();

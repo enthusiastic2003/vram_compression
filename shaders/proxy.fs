@@ -12,14 +12,26 @@ in vec3 texCoord;
 
 out vec4 out_Color;
 
+
+// Transfer function uniforms
+uniform vec3 u_color1 = vec3(0.1, 0.2, 1.0);
+uniform vec3 u_color2 = vec3(1.0, 1.0, 1.0);
+uniform float u_alpha1 = 0.01;
+uniform float u_alpha2 = 0.4;
+uniform float u_threshold = 0.1;
+
 vec4 transferFunction(float scalar_value) {
-    if (scalar_value < 0.1) {
+    if (scalar_value < u_threshold) {
         return vec4(0.0);
     }
-    vec3 color = mix(vec3(0.1, 0.2, 1.0), vec3(1.0, 1.0, 1.0), scalar_value);
-    float alpha = mix(0.01, 0.4, scalar_value);
+    // Remap scalar_value to be in the [0, 1] range based on the threshold
+    float remapped_scalar = (scalar_value - u_threshold) / (1.0 - u_threshold);
+
+    vec3 color = mix(u_color1, u_color2, remapped_scalar);
+    float alpha = mix(u_alpha1, u_alpha2, remapped_scalar);
     return vec4(color, alpha);
 }
+
 
 void main() {
     // The ray starts at the camera and goes towards the fragment on the cube's surface
