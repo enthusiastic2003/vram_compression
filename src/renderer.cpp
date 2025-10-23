@@ -7,6 +7,7 @@
 #include "backends/imgui_impl_glfw.h"
 #include "backends/imgui_impl_opengl3.h"
 #include "vtk_loader.hpp"
+#include <openvdb/openvdb.h>
 
 // Renderer::Renderer(int width, int height, const char* title)
 //     : width_(width), height_(height), title_(title),
