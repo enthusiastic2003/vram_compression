@@ -1,0 +1,4 @@
+/home/prakrut/Desktop/vdb_compression/build/CMakeFiles/vdb_compressor.dir
+/home/prakrut/Desktop/vdb_compression/build/CMakeFiles/check_vdb.dir
+/home/prakrut/Desktop/vdb_compression/build/CMakeFiles/edit_cache.dir
+/home/prakrut/Desktop/vdb_compression/build/CMakeFiles/rebuild_cache.dir
