@@ -8,6 +8,9 @@
 #include "backends/imgui_impl_opengl3.h"
 #include "vtk_loader.hpp"
 #include <openvdb/openvdb.h>
+#include <nanovdb/tools/CreateNanoGrid.h>
+#include <nanovdb/util/CreateNanoGrid.h> // converter from OpenVDB to NanoVDB (includes NanoVDB.h and GridManager.h)
+#include <nanovdb/util/IO.h>
 
 // Renderer::Renderer(int width, int height, const char* title)
 //     : width_(width), height_(height), title_(title),
@@ -112,6 +115,30 @@ bool Renderer::initialize(std::shared_ptr<VoxelLoader> loader) {
     m_shader = Shader("shaders/proxy.vert", "shaders/proxy.fs");
     m_shader.compileAndLink();
 
+    // Openvdb tree initialization and instantiation
+    openvdb::initialize();
+    openvdb::FloatGrid::Ptr m_grid = openvdb::FloatGrid::create(/*background value=*/0.0f);
+
+    //Get grid accessor
+    openvdb::FloatGrid::Accessor m_accessor = m_grid->getAccessor();
+
+    const auto& dims = m_voxelLoader->getDimensions();
+
+    for(int i=0;i<dims.x;i++){
+        for(int j=0;j<dims.y;j++){
+            for(int k=0;k<dims.z;k++){
+                size_t linearCubeIndex = k * (dims.x - 1) * (dims.y - 1) + j * (dims.x - 1) + i;
+                float value = static_cast<float>(m_voxelLoader->getData()[linearCubeIndex]) / 255.0f; // Normalize to [0,1]
+                if(value > 0.0f){
+                    m_accessor.setValue(openvdb::Coord(i,j,k), value);
+                }
+            }
+        }
+    }
+
+    //Convert to nanovdb
+    nanovdb::GridHandle<nanovdb::HostBuffer> handle = nanovdb::tools::createNanoGrid(*m_grid);
+    //auto handle = nanovdb::createNanoGrid(*srcGrid);
     // A simple cube
     float vertices[] = {
         // positions         
@@ -170,9 +197,8 @@ bool Renderer::initialize(std::shared_ptr<VoxelLoader> loader) {
     // In Renderer.cpp, inside initialize()
 // ... after setting up VAO/VBO
 
-    // Get data from your loader
-    const auto& dims = m_voxelLoader->getDimensions();
-    // Get a pointer to the underlying vector data returned by the loader
+
+// Get a pointer to the underlying vector data returned by the loader
     const auto& data_vec = m_voxelLoader->getData();
     const unsigned char* data_ptr = data_vec.data();
 
