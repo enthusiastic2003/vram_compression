@@ -8,9 +8,9 @@
 #include "backends/imgui_impl_opengl3.h"
 #include "vtk_loader.hpp"
 #include <openvdb/openvdb.h>
-#include <nanovdb/tools/CreateNanoGrid.h>
 #include <nanovdb/util/CreateNanoGrid.h> // converter from OpenVDB to NanoVDB (includes NanoVDB.h and GridManager.h)
 #include <nanovdb/util/IO.h>
+#include "cuda_helpers.hpp"
 
 // Renderer::Renderer(int width, int height, const char* title)
 //     : width_(width), height_(height), title_(title),
@@ -111,6 +111,7 @@ bool Renderer::initialize(std::shared_ptr<VoxelLoader> loader) {
     ImGui_ImplGlfw_InitForOpenGL(window, true);
     ImGui_ImplOpenGL3_Init("#version 330");
 
+
     // Create and compile our GLSL program from the shaders
     m_shader = Shader("shaders/proxy.vert", "shaders/proxy.fs");
     m_shader.compileAndLink();
@@ -137,9 +138,25 @@ bool Renderer::initialize(std::shared_ptr<VoxelLoader> loader) {
     }
 
     //Convert to nanovdb
-    nanovdb::GridHandle<nanovdb::HostBuffer> handle = nanovdb::tools::createNanoGrid(*m_grid);
-    //auto handle = nanovdb::createNanoGrid(*srcGrid);
-    // A simple cube
+    // auto handle = nanovdb::tools::createNanoGrid(*m_grid);
+    m_grid->setName("My Voxel Grid");
+    auto handle = nanovdb::tools::createNanoGrid<openvdb::FloatGrid, float, nanovdb::cuda::DeviceBuffer>(*m_grid);
+
+    cudaStream_t stream;
+    cudaStreamCreate(&stream);
+
+    m_deviceHandle = AllocAndUploadVDB(handle.data(), handle.size(), stream);
+
+    VerifyVDB(m_deviceHandle);
+
+    cudaStreamSynchronize(stream);
+    cudaStreamDestroy(stream);
+
+
+    initQuad();
+    initCudaInterop();
+
+
     float vertices[] = {
         // positions         
         -0.5f, -0.5f, -0.5f, 
@@ -234,56 +251,140 @@ bool Renderer::initialize(std::shared_ptr<VoxelLoader> loader) {
     return true;
 }
 
+void Renderer::initQuad() {
+    float quadVertices[] = { 
+        // positions   // texCoords
+        -1.0f,  1.0f,  0.0f, 1.0f,
+        -1.0f, -1.0f,  0.0f, 0.0f,
+         1.0f, -1.0f,  1.0f, 0.0f,
+
+        -1.0f,  1.0f,  0.0f, 1.0f,
+         1.0f, -1.0f,  1.0f, 0.0f,
+         1.0f,  1.0f,  1.0f, 1.0f
+    };
+
+    glGenVertexArrays(1, &m_quadVAO);
+    glGenBuffers(1, &m_quadVBO);
+    glBindVertexArray(m_quadVAO);
+    glBindBuffer(GL_ARRAY_BUFFER, m_quadVBO);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(quadVertices), &quadVertices, GL_STATIC_DRAW);
+    
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), (void*)0);
+    glEnableVertexAttribArray(1);
+    glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), (void*)(2 * sizeof(float)));
+}
+
+void Renderer::initCudaInterop() {
+    // 1. Create the OpenGL Texture
+    glGenTextures(1, &m_cudaOutputTex);
+    glBindTexture(GL_TEXTURE_2D, m_cudaOutputTex);
+    
+    // ARGB32F is standard for CUDA interop
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA32F, width_, height_, 0, GL_RGBA, GL_FLOAT, NULL);
+    
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+
+    // 2. Register with CUDA
+    // This tells CUDA: "I want to map this GL texture into my memory space"
+    cudaError_t err = cudaGraphicsGLRegisterImage(&m_cudaResource, m_cudaOutputTex, 
+                                                  GL_TEXTURE_2D, 
+                                                  cudaGraphicsRegisterFlagsWriteDiscard);
+    
+    if (err != cudaSuccess) {
+        std::cerr << "CUDA Mapping failed: " << cudaGetErrorString(err) << std::endl;
+    }
+}
+
+// void Renderer::renderScene() {
+//     // 1. Clear the screen for the new frame
+//     glClearColor(0.1f, 0.1f, 0.12f, 1.0f);
+//     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT); 
+
+//     // 2. Use the shader program
+//     m_shader.use();
+
+//     // Set camera and rendering uniforms
+//     m_shader.setMat4("view", camera_.getViewMatrix());
+//     m_shader.setMat4("projection", camera_.getProjectionMatrix( (float)width_ / (float)height_));
+//     m_shader.setMat4("model", glm::mat4(1.0f));
+//     m_shader.setFloat("u_stepSize", 0.005f);
+//     m_shader.setInt("u_marchSteps", 256);
+//     m_shader.setVec3("u_cameraPosition", camera_.getPosition().x, camera_.getPosition().y, camera_.getPosition().z);
+
+//     // Set transfer function uniforms
+//     m_shader.setVec3("u_color1", m_color1.x, m_color1.y, m_color1.z);
+//     m_shader.setVec3("u_color2", m_color2.x, m_color2.y, m_color2.z);
+//     m_shader.setFloat("u_alpha1", m_alpha1);
+//     m_shader.setFloat("u_alpha2", m_alpha2);
+//     m_shader.setFloat("u_threshold", m_threshold);
+
+//     // Bind the 3D Volume Texture to texture unit 0
+//     glActiveTexture(GL_TEXTURE0);
+//     glBindTexture(GL_TEXTURE_3D, m_volumeTextureID);
+//     m_shader.setInt("u_volumeTexture", 0);
+
+//     // --- MODIFICATIONS START HERE ---
+
+//     // 3. Set OpenGL state for transparent volume rendering
+//     glEnable(GL_BLEND);
+//     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA); // Standard alpha blending
+//     glDisable(GL_CULL_FACE); // This is the key: render both front and back faces
+//     glDepthMask(GL_FALSE);   // Don't let the volume write to the depth buffer
+
+//     // 4. Bind the cube's VAO and draw it
+//     glBindVertexArray(m_cubeVAO);
+//     glDrawArrays(GL_TRIANGLES, 0, 36);
+
+//     // 5. Restore OpenGL state to default
+//     glDepthMask(GL_TRUE);    // Re-enable depth writing
+//     glEnable(GL_CULL_FACE);  // Re-enable face culling for other objects (like ImGui)
+//     glDisable(GL_BLEND);
+
+//     // --- MODIFICATIONS END HERE ---
+
+//     // 6. Unbind everything
+//     glBindVertexArray(0);
+//     glBindTexture(GL_TEXTURE_3D, 0); // Good practice to unbind texture
+// }
+
 void Renderer::renderScene() {
-    // 1. Clear the screen for the new frame
-    glClearColor(0.1f, 0.1f, 0.12f, 1.0f);
-    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT); 
+    // 1. Map OpenGL texture to CUDA
+    cudaGraphicsMapResources(1, &m_cudaResource, 0);
+    
+    cudaArray_t array;
+    cudaGraphicsSubResourceGetMappedArray(&array, m_cudaResource, 0, 0);
 
-    // 2. Use the shader program
+    // 2. Create a Surface Object (The canvas CUDA writes to)
+    cudaResourceDesc resDesc;
+    memset(&resDesc, 0, sizeof(resDesc));
+    resDesc.resType = cudaResourceTypeArray;
+    resDesc.res.array.array = array;
+
+    cudaSurfaceObject_t surface;
+    cudaCreateSurfaceObject(&surface, &resDesc);
+
+    // 3. Launch the Kernel (The Painter)
+    // This will paint the texture Red/Green
+    LaunchDummyKernel(surface, width_, height_);
+
+    // 4. Cleanup CUDA resources
+    cudaDestroySurfaceObject(surface);
+    cudaGraphicsUnmapResources(1, &m_cudaResource, 0);
+
+    // 5. Render the Texture to Screen using OpenGL
+    glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+    glClear(GL_COLOR_BUFFER_BIT);
+
     m_shader.use();
-
-    // Set camera and rendering uniforms
-    m_shader.setMat4("view", camera_.getViewMatrix());
-    m_shader.setMat4("projection", camera_.getProjectionMatrix( (float)width_ / (float)height_));
-    m_shader.setMat4("model", glm::mat4(1.0f));
-    m_shader.setFloat("u_stepSize", 0.005f);
-    m_shader.setInt("u_marchSteps", 256);
-    m_shader.setVec3("u_cameraPosition", camera_.getPosition().x, camera_.getPosition().y, camera_.getPosition().z);
-
-    // Set transfer function uniforms
-    m_shader.setVec3("u_color1", m_color1.x, m_color1.y, m_color1.z);
-    m_shader.setVec3("u_color2", m_color2.x, m_color2.y, m_color2.z);
-    m_shader.setFloat("u_alpha1", m_alpha1);
-    m_shader.setFloat("u_alpha2", m_alpha2);
-    m_shader.setFloat("u_threshold", m_threshold);
-
-    // Bind the 3D Volume Texture to texture unit 0
     glActiveTexture(GL_TEXTURE0);
-    glBindTexture(GL_TEXTURE_3D, m_volumeTextureID);
-    m_shader.setInt("u_volumeTexture", 0);
+    glBindTexture(GL_TEXTURE_2D, m_cudaOutputTex);
+    m_shader.setInt("screenTexture", 0);
 
-    // --- MODIFICATIONS START HERE ---
-
-    // 3. Set OpenGL state for transparent volume rendering
-    glEnable(GL_BLEND);
-    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA); // Standard alpha blending
-    glDisable(GL_CULL_FACE); // This is the key: render both front and back faces
-    glDepthMask(GL_FALSE);   // Don't let the volume write to the depth buffer
-
-    // 4. Bind the cube's VAO and draw it
-    glBindVertexArray(m_cubeVAO);
-    glDrawArrays(GL_TRIANGLES, 0, 36);
-
-    // 5. Restore OpenGL state to default
-    glDepthMask(GL_TRUE);    // Re-enable depth writing
-    glEnable(GL_CULL_FACE);  // Re-enable face culling for other objects (like ImGui)
-    glDisable(GL_BLEND);
-
-    // --- MODIFICATIONS END HERE ---
-
-    // 6. Unbind everything
+    glBindVertexArray(m_quadVAO);
+    glDrawArrays(GL_TRIANGLES, 0, 6);
     glBindVertexArray(0);
-    glBindTexture(GL_TEXTURE_3D, 0); // Good practice to unbind texture
 }
 
 void Renderer::renderUI() {

@@ -5,6 +5,11 @@
 #include "camera.h"
 #include "shader.h"
 #include <memory>
+// CUDA Includes
+#include <cuda_runtime.h>
+#include <cuda_gl_interop.h>
+#include <nanovdb/util/cuda/CudaDeviceBuffer.h> // <--- CRITICAL INCLUDE
+// #include <nanovdb/GridHandle.h> // <--- ADD THIS LINE
 
 class Renderer {
 private:
@@ -54,4 +59,19 @@ private:
     static void scroll_callback(GLFWwindow* window, double xoffset, double yoffset);
     static void defaultKeyCallback(GLFWwindow* window, int key, int scancode, int action, int mods);
     static void framebuffer_size_callback(GLFWwindow* window, int width, int height);
+
+    GLuint m_cudaOutputTex = 0;       // The OpenGL Texture ID
+    cudaGraphicsResource* m_cudaResource = nullptr; // The link between GL and CUDA
+    
+    // --- NEW: Screen Quad Members ---
+    GLuint m_quadVAO = 0;
+    GLuint m_quadVBO = 0;
+    Shader m_screenShader; // A simple pass-through shader
+
+    // Helper to initialize the texture and quad
+    void initCudaInterop(); 
+    void initQuad();
+
+    // nanovdb::GridHandle<nanovdb::cuda::DeviceBuffer> m_deviceHandle;
+    void* m_deviceHandle = nullptr;
 };

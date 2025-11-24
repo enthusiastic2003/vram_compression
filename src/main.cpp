@@ -9,7 +9,7 @@ int main(int argc, char* argv[])
         return -1;
     }
 
-    const char* vtkFilePath = "/home/sirjanh/vram_compression/data/vtk/bonsai_256x256x256_uint8.vtk";
+    const char* vtkFilePath = argv[1];
 
     auto voxelData = std::make_shared<VoxelLoader>();
     if (!voxelData->loadVTK(vtkFilePath)) {
