@@ -216,6 +216,8 @@ extern "C" void* AllocAndUploadVDB(const void* hostData, uint64_t size, cudaStre
     // Your DeviceBuffer class exposes the raw GPU pointer via deviceData().
     // We use standard CUDA to copy our bytes there.
     void* gpuPtr = deviceBuffer.deviceData();
+
+    printf("Uploading VDB Grid to GPU VRAM (Size: %llu bytes)...\n", size);
     
     cudaMemcpyAsync(gpuPtr, hostData, size, cudaMemcpyHostToDevice, stream);
 

@@ -11,6 +11,8 @@
 #include <nanovdb/util/CreateNanoGrid.h>
 #include <nanovdb/util/IO.h>
 #include "cuda_helpers.hpp"
+#include "vdb_compressor.h"
+
 
 Renderer::~Renderer() {
     FreeVDB(m_deviceHandle);
@@ -133,6 +135,12 @@ bool Renderer::initialize(std::shared_ptr<VoxelLoader> loader) {
             }
         }
     }
+
+    // Compress the VDB grid using our vdb_compressor
+    float compressionQuality = 0.5f; // User-defined quality parameter [0.0 - 1.0]
+    vdb_compressor compressor(m_grid, compressionQuality);
+    m_grid = compressor.compress("f2"); // Using f2 similarity metric
+
 
     // Convert to NanoVDB for CUDA
     m_grid->setName("My Voxel Grid");

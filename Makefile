@@ -27,7 +27,11 @@ LDFLAGS  := -Wl,-rpath,/usr/local/lib # Add runtime path for libraries
 # -dc: Generate relocatable device code (crucial for linking)
 # --ptxas-options=-v: Verbose PTX assembly (optional, good for debug)
 #NVCCFLAGS := -x cu -dc -std=c++17 
-NVCCFLAGS := -x cu -std=c++17 --compiler-options '-fPIC' --expt-relaxed-constexpr --extended-lambda
+NVCCFLAGS := -x cu -std=c++17 --compiler-options '-fPIC' \
+             --expt-relaxed-constexpr --extended-lambda \
+             -O3 --use_fast_math \
+             -gencode arch=compute_75,code=sm_75 \
+             -gencode arch=compute_75,code=compute_75
 # Add architecture flags if known (e.g. -arch=sm_60). Leaving auto for now.
 
 # --- Build Type Configuration ---
