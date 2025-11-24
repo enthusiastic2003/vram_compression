@@ -13,15 +13,15 @@ extern "C" {
     const nanovdb::FloatGrid* GetDeviceGrid(void* handlePtr);
     void VerifyVDB(void* handlePtr);
     
-    // // Update your launcher signature to take void* handle
-    // void LaunchRayMarch(
-    //     cudaSurfaceObject_t surface, 
-    //     int width, int height, 
-    //     void* deviceHandle, // <--- Changed from Grid* to void*
-    //     float cX, float cY, float cZ,
-    //     float dX, float dY, float dZ,
-    //     float uX, float uY, float uZ,
-    //     float rX, float rY, float rZ,
-    //     float fov
-    // );
+    // The Ray Marcher Launcher
+    void LaunchRayMarch(
+        cudaSurfaceObject_t surface, 
+        int width, int height, 
+        void* handle,                       // <--- UPDATED: Opaque Pointer
+        float cX, float cY, float cZ,       // Camera Position
+        float dX, float dY, float dZ,       // Camera Direction
+        float uX, float uY, float uZ,       // Camera Up
+        float rX, float rY, float rZ,       // Camera Right
+        float fov                           // FOV
+    );
 }

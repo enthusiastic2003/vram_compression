@@ -8,18 +8,12 @@
 #include "backends/imgui_impl_opengl3.h"
 #include "vtk_loader.hpp"
 #include <openvdb/openvdb.h>
-#include <nanovdb/util/CreateNanoGrid.h> // converter from OpenVDB to NanoVDB (includes NanoVDB.h and GridManager.h)
+#include <nanovdb/util/CreateNanoGrid.h>
 #include <nanovdb/util/IO.h>
 #include "cuda_helpers.hpp"
 
-// Renderer::Renderer(int width, int height, const char* title)
-//     : width_(width), height_(height), title_(title),
-//       window_(nullptr),
-//       camera_(3.0f, 45.0f)  // distance=3, fov=45
-// {}
-
-// The destructor is the best place for cleanup code.
 Renderer::~Renderer() {
+    FreeVDB(m_deviceHandle);
     ImGui_ImplOpenGL3_Shutdown();
     ImGui_ImplGlfw_Shutdown();
     ImGui::DestroyContext();
@@ -27,11 +21,10 @@ Renderer::~Renderer() {
         glfwDestroyWindow(window);
     }
     glfwTerminate();
+
 }
 
-
-void Renderer::glfw_error_callback(int error, const char* description)
-{
+void Renderer::glfw_error_callback(int error, const char* description) {
     std::cerr << "GLFW Error " << error << ": " << description << std::endl;
 }
 
@@ -43,8 +36,8 @@ bool Renderer::initialize(std::shared_ptr<VoxelLoader> loader) {
         return false;
     }
 
-    // Initialization code (e.g., setting up OpenGL context, shaders, etc.)
-   glfwSetErrorCallback(glfw_error_callback);
+    // Initialize GLFW
+    glfwSetErrorCallback(glfw_error_callback);
     if (!glfwInit())
         return false;
 
@@ -57,9 +50,8 @@ bool Renderer::initialize(std::shared_ptr<VoxelLoader> loader) {
     glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GL_TRUE);
 #endif
 
-    window = glfwCreateWindow(1280, 720, "GLFW + GLAD + ImGui", nullptr, nullptr);
-    if (!window)
-    {
+    window = glfwCreateWindow(1280, 720, "CUDA Volume Ray Marcher", nullptr, nullptr);
+    if (!window) {
         std::cerr << "Failed to create GLFW window\n";
         glfwTerminate();
         return false;
@@ -67,15 +59,12 @@ bool Renderer::initialize(std::shared_ptr<VoxelLoader> loader) {
 
     glfwMakeContextCurrent(window);
     glfwSwapInterval(1); // Enable vsync
-    
 
-    if (!gladLoadGLLoader((GLADloadproc)glfwGetProcAddress))
-    {
+    if (!gladLoadGLLoader((GLADloadproc)glfwGetProcAddress)) {
         std::cerr << "Failed to initialize GLAD\n";
         return false;
     }
 
-    // --- NEW ---
     // Get initial framebuffer size and set the viewport
     glfwGetFramebufferSize(window, &width_, &height_);
     glViewport(0, 0, width_, height_);
@@ -91,19 +80,19 @@ bool Renderer::initialize(std::shared_ptr<VoxelLoader> loader) {
     // Setup Dear ImGui context
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
-    ImGuiIO& io = ImGui::GetIO(); (void)io;
+    ImGuiIO& io = ImGui::GetIO();
+    (void)io;
 
     // Enable Docking + Multi-Viewport
-    io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;   // Enable Keyboard Controls
-    io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;        // Enable Docking
-    io.ConfigFlags |= ImGuiConfigFlags_ViewportsEnable;      // Enable Multi-Viewport / Platform Windows
+    io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
+    io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
+    io.ConfigFlags |= ImGuiConfigFlags_ViewportsEnable;
 
     ImGui::StyleColorsDark();
 
     // When viewports are enabled, tweak style for consistency across OS windows
     ImGuiStyle& style = ImGui::GetStyle();
-    if (io.ConfigFlags & ImGuiConfigFlags_ViewportsEnable)
-    {
+    if (io.ConfigFlags & ImGuiConfigFlags_ViewportsEnable) {
         style.WindowRounding = 0.0f;
         style.Colors[ImGuiCol_WindowBg].w = 1.0f;
     }
@@ -111,142 +100,72 @@ bool Renderer::initialize(std::shared_ptr<VoxelLoader> loader) {
     ImGui_ImplGlfw_InitForOpenGL(window, true);
     ImGui_ImplOpenGL3_Init("#version 330");
 
-
-    // Create and compile our GLSL program from the shaders
+    // Create simple shader for displaying the CUDA-generated texture
     m_shader = Shader("shaders/proxy.vert", "shaders/proxy.fs");
     m_shader.compileAndLink();
 
-    // Openvdb tree initialization and instantiation
+    // OpenVDB tree initialization
     openvdb::initialize();
     openvdb::FloatGrid::Ptr m_grid = openvdb::FloatGrid::create(/*background value=*/0.0f);
 
-    //Get grid accessor
+    // Get grid accessor
     openvdb::FloatGrid::Accessor m_accessor = m_grid->getAccessor();
 
     const auto& dims = m_voxelLoader->getDimensions();
+    const auto& rawData = m_voxelLoader->getData();
+    size_t totalSize = rawData.size();
 
-    for(int i=0;i<dims.x;i++){
-        for(int j=0;j<dims.y;j++){
-            for(int k=0;k<dims.z;k++){
-                size_t linearCubeIndex = k * (dims.x - 1) * (dims.y - 1) + j * (dims.x - 1) + i;
-                float value = static_cast<float>(m_voxelLoader->getData()[linearCubeIndex]) / 255.0f; // Normalize to [0,1]
-                if(value > 0.0f){
-                    m_accessor.setValue(openvdb::Coord(i,j,k), value);
+    // Populate OpenVDB grid with voxel data
+    // Loop order: Z -> Y -> X for cache efficiency
+    for (int k = 0; k < dims.z; ++k) {
+        for (int j = 0; j < dims.y; ++j) {
+            for (int i = 0; i < dims.x; ++i) {
+                size_t index = (size_t)k * (dims.x * dims.y) + (size_t)j * dims.x + (size_t)i;
+                
+                if (index < totalSize) {
+                    uint8_t val = rawData[index];
+                    
+                    if (val > 0) {
+                        float density = static_cast<float>(val) / 255.0f;
+                        m_accessor.setValue(openvdb::Coord(i, j, k), density);
+                    }
                 }
             }
         }
     }
 
-    //Convert to nanovdb
-    // auto handle = nanovdb::tools::createNanoGrid(*m_grid);
+    // Convert to NanoVDB for CUDA
     m_grid->setName("My Voxel Grid");
     auto handle = nanovdb::tools::createNanoGrid<openvdb::FloatGrid, float, nanovdb::cuda::DeviceBuffer>(*m_grid);
 
+    std::cout << "\n=== HOST DATA VERIFICATION (OpenVDB) ===\n";
+    std::cout << "Grid Name: " << m_grid->getName() << "\n";
+    std::cout << "Grid Type: " << m_grid->type() << "\n";
+    std::cout << "Active Voxel Count: " << m_grid->activeVoxelCount() << "\n";
+
+    openvdb::CoordBBox bbox = m_grid->evalActiveVoxelBoundingBox();
+    std::cout << "Bounding Box Index Space:\n";
+    std::cout << "   Min: (" << bbox.min().x() << ", " << bbox.min().y() << ", " << bbox.min().z() << ")\n";
+    std::cout << "   Max: (" << bbox.max().x() << ", " << bbox.max().y() << ", " << bbox.max().z() << ")\n";
+    std::cout << "========================================\n\n";
+
+    // Upload to CUDA device
     cudaStream_t stream;
     cudaStreamCreate(&stream);
 
     m_deviceHandle = AllocAndUploadVDB(handle.data(), handle.size(), stream);
-
     VerifyVDB(m_deviceHandle);
 
     cudaStreamSynchronize(stream);
     cudaStreamDestroy(stream);
 
-
+    // Initialize rendering components
     initQuad();
     initCudaInterop();
 
-
-    float vertices[] = {
-        // positions         
-        -0.5f, -0.5f, -0.5f, 
-         0.5f, -0.5f, -0.5f,  
-         0.5f,  0.5f, -0.5f,  
-         0.5f,  0.5f, -0.5f,  
-        -0.5f,  0.5f, -0.5f, 
-        -0.5f, -0.5f, -0.5f, 
-
-        -0.5f, -0.5f,  0.5f, 
-         0.5f, -0.5f,  0.5f,  
-         0.5f,  0.5f,  0.5f,  
-         0.5f,  0.5f,  0.5f,  
-        -0.5f,  0.5f,  0.5f, 
-        -0.5f, -0.5f,  0.5f, 
-
-        -0.5f,  0.5f,  0.5f, 
-        -0.5f,  0.5f, -0.5f, 
-        -0.5f, -0.5f, -0.5f, 
-        -0.5f, -0.5f, -0.5f, 
-        -0.5f, -0.5f,  0.5f, 
-        -0.5f,  0.5f,  0.5f, 
-
-         0.5f,  0.5f,  0.5f, 
-         0.5f,  0.5f, -0.5f, 
-         0.5f, -0.5f, -0.5f, 
-         0.5f, -0.5f, -0.5f, 
-         0.5f, -0.5f,  0.5f, 
-         0.5f,  0.5f,  0.5f, 
-
-        -0.5f, -0.5f, -0.5f, 
-         0.5f, -0.5f, -0.5f, 
-         0.5f, -0.5f,  0.5f, 
-         0.5f, -0.5f,  0.5f, 
-        -0.5f, -0.5f,  0.5f, 
-        -0.5f, -0.5f, -0.5f, 
-
-        -0.5f,  0.5f, -0.5f, 
-         0.5f,  0.5f, -0.5f, 
-         0.5f,  0.5f,  0.5f, 
-         0.5f,  0.5f,  0.5f, 
-        -0.5f,  0.5f,  0.5f, 
-        -0.5f,  0.5f, -0.5f, 
-    };
-
-    glGenVertexArrays(1, &m_cubeVAO);
-    glGenBuffers(1, &m_cubeVBO);
-
-    glBindVertexArray(m_cubeVAO);
-
-    glBindBuffer(GL_ARRAY_BUFFER, m_cubeVBO);
-    glBufferData(GL_ARRAY_BUFFER, sizeof(vertices), vertices, GL_STATIC_DRAW);
-    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float), (void*)0);
-
-    // In Renderer.cpp, inside initialize()
-// ... after setting up VAO/VBO
-
-
-// Get a pointer to the underlying vector data returned by the loader
-    const auto& data_vec = m_voxelLoader->getData();
-    const unsigned char* data_ptr = data_vec.data();
-
-    glGenTextures(1, &m_volumeTextureID);
-    glBindTexture(GL_TEXTURE_3D, m_volumeTextureID);
-
-    // Set texture parameters (these are good)
-    glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-    glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-    glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_WRAP_R, GL_CLAMP_TO_EDGE);
-
-    // --- CORRECTED TEXTURE UPLOAD ---
-    glTexImage3D(
-        GL_TEXTURE_3D,
-        0,
-        GL_R8,             // Internal format on GPU: 8-bit single channel
-        dims.x,
-        dims.y,
-        dims.z,
-        0,
-        GL_RED,            // Format of source data: single channel
-        GL_UNSIGNED_BYTE,  // Type of source data: unsigned char
-        data_ptr
-    );
-
-    glBindTexture(GL_TEXTURE_3D, 0);
-
-    // Position attribute
-    glEnableVertexAttribArray(0);
+    // Set up camera to view the volume
+    camera_.setTarget(glm::vec3(128.0f, 128.0f, 128.0f));
+    camera_.setDistance(400.0f);
 
     return true;
 }
@@ -276,87 +195,33 @@ void Renderer::initQuad() {
 }
 
 void Renderer::initCudaInterop() {
-    // 1. Create the OpenGL Texture
+    // Create OpenGL texture for CUDA output
     glGenTextures(1, &m_cudaOutputTex);
     glBindTexture(GL_TEXTURE_2D, m_cudaOutputTex);
     
-    // ARGB32F is standard for CUDA interop
+    // RGBA32F is standard for CUDA interop
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA32F, width_, height_, 0, GL_RGBA, GL_FLOAT, NULL);
     
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
 
-    // 2. Register with CUDA
-    // This tells CUDA: "I want to map this GL texture into my memory space"
+    // Register texture with CUDA
     cudaError_t err = cudaGraphicsGLRegisterImage(&m_cudaResource, m_cudaOutputTex, 
                                                   GL_TEXTURE_2D, 
                                                   cudaGraphicsRegisterFlagsWriteDiscard);
     
     if (err != cudaSuccess) {
-        std::cerr << "CUDA Mapping failed: " << cudaGetErrorString(err) << std::endl;
+        std::cerr << "CUDA texture mapping failed: " << cudaGetErrorString(err) << std::endl;
     }
 }
 
-// void Renderer::renderScene() {
-//     // 1. Clear the screen for the new frame
-//     glClearColor(0.1f, 0.1f, 0.12f, 1.0f);
-//     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT); 
-
-//     // 2. Use the shader program
-//     m_shader.use();
-
-//     // Set camera and rendering uniforms
-//     m_shader.setMat4("view", camera_.getViewMatrix());
-//     m_shader.setMat4("projection", camera_.getProjectionMatrix( (float)width_ / (float)height_));
-//     m_shader.setMat4("model", glm::mat4(1.0f));
-//     m_shader.setFloat("u_stepSize", 0.005f);
-//     m_shader.setInt("u_marchSteps", 256);
-//     m_shader.setVec3("u_cameraPosition", camera_.getPosition().x, camera_.getPosition().y, camera_.getPosition().z);
-
-//     // Set transfer function uniforms
-//     m_shader.setVec3("u_color1", m_color1.x, m_color1.y, m_color1.z);
-//     m_shader.setVec3("u_color2", m_color2.x, m_color2.y, m_color2.z);
-//     m_shader.setFloat("u_alpha1", m_alpha1);
-//     m_shader.setFloat("u_alpha2", m_alpha2);
-//     m_shader.setFloat("u_threshold", m_threshold);
-
-//     // Bind the 3D Volume Texture to texture unit 0
-//     glActiveTexture(GL_TEXTURE0);
-//     glBindTexture(GL_TEXTURE_3D, m_volumeTextureID);
-//     m_shader.setInt("u_volumeTexture", 0);
-
-//     // --- MODIFICATIONS START HERE ---
-
-//     // 3. Set OpenGL state for transparent volume rendering
-//     glEnable(GL_BLEND);
-//     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA); // Standard alpha blending
-//     glDisable(GL_CULL_FACE); // This is the key: render both front and back faces
-//     glDepthMask(GL_FALSE);   // Don't let the volume write to the depth buffer
-
-//     // 4. Bind the cube's VAO and draw it
-//     glBindVertexArray(m_cubeVAO);
-//     glDrawArrays(GL_TRIANGLES, 0, 36);
-
-//     // 5. Restore OpenGL state to default
-//     glDepthMask(GL_TRUE);    // Re-enable depth writing
-//     glEnable(GL_CULL_FACE);  // Re-enable face culling for other objects (like ImGui)
-//     glDisable(GL_BLEND);
-
-//     // --- MODIFICATIONS END HERE ---
-
-//     // 6. Unbind everything
-//     glBindVertexArray(0);
-//     glBindTexture(GL_TEXTURE_3D, 0); // Good practice to unbind texture
-// }
-
 void Renderer::renderScene() {
-    // 1. Map OpenGL texture to CUDA
+    // Map OpenGL texture to CUDA
     cudaGraphicsMapResources(1, &m_cudaResource, 0);
     
     cudaArray_t array;
     cudaGraphicsSubResourceGetMappedArray(&array, m_cudaResource, 0, 0);
 
-    // 2. Create a Surface Object (The canvas CUDA writes to)
     cudaResourceDesc resDesc;
     memset(&resDesc, 0, sizeof(resDesc));
     resDesc.resType = cudaResourceTypeArray;
@@ -365,15 +230,30 @@ void Renderer::renderScene() {
     cudaSurfaceObject_t surface;
     cudaCreateSurfaceObject(&surface, &resDesc);
 
-    // 3. Launch the Kernel (The Painter)
-    // This will paint the texture Red/Green
-    LaunchDummyKernel(surface, width_, height_);
+    // Get camera parameters
+    glm::vec3 cPos = camera_.getPosition();
+    glm::vec3 cDir = camera_.getDirection();
+    glm::vec3 cUp = camera_.getUp();
+    glm::vec3 cRight = glm::normalize(glm::cross(cDir, cUp));
+    glm::vec3 cLocalUp = glm::normalize(glm::cross(cRight, cDir));
+    float fovRad = glm::radians(camera_.getFOV());
 
-    // 4. Cleanup CUDA resources
+    // Launch CUDA ray marching kernel
+    LaunchRayMarch(
+        surface, width_, height_, 
+        m_deviceHandle,
+        cPos.x, cPos.y, cPos.z,
+        cDir.x, cDir.y, cDir.z,
+        cLocalUp.x, cLocalUp.y, cLocalUp.z,
+        cRight.x, cRight.y, cRight.z,
+        fovRad
+    );
+
+    // Cleanup CUDA resources
     cudaDestroySurfaceObject(surface);
     cudaGraphicsUnmapResources(1, &m_cudaResource, 0);
 
-    // 5. Render the Texture to Screen using OpenGL
+    // Render CUDA output to screen
     glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
     glClear(GL_COLOR_BUFFER_BIT);
 
@@ -385,15 +265,16 @@ void Renderer::renderScene() {
     glBindVertexArray(m_quadVAO);
     glDrawArrays(GL_TRIANGLES, 0, 6);
     glBindVertexArray(0);
+    glBindTexture(GL_TEXTURE_2D, 0);
 }
 
 void Renderer::renderUI() {
-    // 1. Start a new ImGui frame
+    // Start new ImGui frame
     ImGui_ImplOpenGL3_NewFrame();
     ImGui_ImplGlfw_NewFrame();
     ImGui::NewFrame();
 
-    // 2. Build your UI here
+    // Build UI
     ImGui::Begin("Transfer Function Editor");
     ImGui::ColorEdit3("Start Color", &m_color1.x);
     ImGui::ColorEdit3("End Color", &m_color2.x);
@@ -404,11 +285,11 @@ void Renderer::renderUI() {
 
     camera_.renderImGuiControls();
 
-    // 3. Render the ImGui frame
+    // Render ImGui
     ImGui::Render();
     ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
 
-    // Handle multiple OS windows (if docking is enabled)
+    // Handle multiple OS windows
     ImGuiIO& io = ImGui::GetIO();
     if (io.ConfigFlags & ImGuiConfigFlags_ViewportsEnable) {
         GLFWwindow* backup_current_context = glfwGetCurrentContext();
@@ -420,13 +301,12 @@ void Renderer::renderUI() {
 
 void Renderer::run() {
     float lastFrame = 0.0f;
-    // This is the main application loop.
+    
     while (!glfwWindowShouldClose(window)) {
         float currentFrame = glfwGetTime();
         float deltaTime = currentFrame - lastFrame;
         lastFrame = currentFrame;
 
-        // Handle user input and OS events
         glfwPollEvents();
 
         // Process keyboard input for camera
@@ -435,17 +315,15 @@ void Renderer::run() {
         if (glfwGetKey(window, GLFW_KEY_DOWN) == GLFW_PRESS)
             camera_.onKeyboard(GLFW_KEY_DOWN, GLFW_PRESS, deltaTime);
 
-        // Render the main 3D scene
+        // Render scene and UI
         renderScene();
-
-        // Render the user interface on top of the scene
         renderUI();
 
-        // Swap the front and back buffers to display the rendered frame
         glfwSwapBuffers(window);
     }
 }
 
+// GLFW Callbacks
 void Renderer::mouse_button_callback(GLFWwindow* window, int button, int action, int mods) {
     Renderer* renderer = static_cast<Renderer*>(glfwGetWindowUserPointer(window));
     if (renderer)
@@ -470,6 +348,14 @@ void Renderer::defaultKeyCallback(GLFWwindow* window, int key, int scancode, int
         renderer->handleKey(key, scancode, action, mods);
 }
 
+void Renderer::framebuffer_size_callback(GLFWwindow* window, int width, int height) {
+    Renderer* renderer = static_cast<Renderer*>(glfwGetWindowUserPointer(window));
+    if (renderer) {
+        renderer->handleFramebufferSizeChange(width, height);
+    }
+}
+
+// Event Handlers
 void Renderer::handleMouseButton(int button, int action, int mods) {
     ImGuiIO& io = ImGui::GetIO();
     if (io.WantCaptureMouse) return;
@@ -499,20 +385,37 @@ void Renderer::handleKey(int key, int scancode, int action, int mods) {
     }
 }
 
-// Add this static callback function with the others
-void Renderer::framebuffer_size_callback(GLFWwindow* window, int width, int height) {
-    Renderer* renderer = static_cast<Renderer*>(glfwGetWindowUserPointer(window));
-    if (renderer) {
-        renderer->handleFramebufferSizeChange(width, height);
-    }
-}
-
-// Add this handler method with the other handlers
 void Renderer::handleFramebufferSizeChange(int width, int height) {
-    // This is the crucial line!
-    glViewport(0, 0, width, height);
+    if (width == 0 || height == 0) return; // Window is minimized
 
-    // Update our stored width and height
+    glViewport(0, 0, width, height);
     width_ = width;
     height_ = height;
+
+    // --- RESIZE LOGIC ---
+    
+    // 1. Unregister the old resource from CUDA
+    // We MUST do this before touching the OpenGL texture, otherwise CUDA holds a lock on dead memory.
+    if (m_cudaResource) {
+        cudaGraphicsUnregisterResource(m_cudaResource);
+    }
+
+    // 2. Resize the OpenGL Texture
+    // We allocate new storage for the texture with the new dimensions.
+    glBindTexture(GL_TEXTURE_2D, m_cudaOutputTex);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA32F, width, height, 0, GL_RGBA, GL_FLOAT, NULL);
+    glBindTexture(GL_TEXTURE_2D, 0);
+
+    // 3. Re-register with CUDA
+    // Map the new, larger texture to the CUDA resource handle.
+    cudaError_t err = cudaGraphicsGLRegisterImage(
+        &m_cudaResource, 
+        m_cudaOutputTex, 
+        GL_TEXTURE_2D, 
+        cudaGraphicsRegisterFlagsWriteDiscard
+    );
+
+    if (err != cudaSuccess) {
+        std::cerr << "CUDA Resize failed: " << cudaGetErrorString(err) << std::endl;
+    }
 }

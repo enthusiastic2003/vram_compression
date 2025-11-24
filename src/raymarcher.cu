@@ -4,6 +4,8 @@
 // src/raymarch.cu
 #include <nanovdb/cuda/DeviceBuffer.h>
 #include <nanovdb/GridHandle.h>
+#include <nanovdb/util/Ray.h>
+#include <nanovdb/math/Math.h>
 //CudaDeviceBuffer.h>
 
 using DeviceHandle = nanovdb::GridHandle<nanovdb::cuda::DeviceBuffer>;
@@ -37,6 +39,109 @@ extern "C" void LaunchDummyKernel(cudaSurfaceObject_t surface, int width, int he
                   (height + blockSize.y - 1) / blockSize.y);
 
     DummyWriteKernel<<<gridSize, blockSize>>>(surface, width, height);
+}
+
+struct KernelCamera {
+    float3 pos;
+    float3 dir;
+    float3 up;
+    float3 right;
+    float fov;
+};
+
+__global__ void RayMarchKernel(
+    cudaSurfaceObject_t surface, 
+    int width, 
+    int height, 
+    const nanovdb::FloatGrid* grid,
+    KernelCamera cam
+) 
+{
+    int x = blockIdx.x * blockDim.x + threadIdx.x;
+    int y = blockIdx.y * blockDim.y + threadIdx.y;
+
+    if (x >= width || y >= height) return;
+
+    // --- A. Ray Generation (Pinhole Camera) ---
+    float u = (x / (float)width) * 2.0f - 1.0f;
+    float v = (y / (float)height) * 2.0f - 1.0f;
+    u *= (float)width / (float)height; 
+
+    float tanFov = tanf(cam.fov * 0.5f);
+    
+    // Construct Ray Direction in World Space
+    float3 rawDir = make_float3(
+        cam.dir.x + cam.right.x * u * tanFov + cam.up.x * v * tanFov,
+        cam.dir.y + cam.right.y * u * tanFov + cam.up.y * v * tanFov,
+        cam.dir.z + cam.right.z * u * tanFov + cam.up.z * v * tanFov
+    );
+    
+    // Normalize
+    float len = sqrtf(rawDir.x*rawDir.x + rawDir.y*rawDir.y + rawDir.z*rawDir.z);
+    nanovdb::Vec3f rayDir(rawDir.x/len, rawDir.y/len, rawDir.z/len);
+    nanovdb::Vec3f rayOrigin(cam.pos.x, cam.pos.y, cam.pos.z);
+
+    // --- B. Ray Setup ---
+    nanovdb::Ray<float> iRay(rayOrigin, rayDir);
+    
+    float4 outputColor = make_float4(0.0f, 0.0f, 0.0f, 1.0f); // Black Background
+
+    if (grid) {
+        // Transform Ray: World Space -> Index Space (Voxels)
+        iRay.worldToIndexF(*grid);
+
+        // Get Bounding Box
+        nanovdb::CoordBBox bbox = grid->tree().bbox();
+
+        // Clip Ray against the Volume Box
+        // This sets iRay.t0() (entry) and iRay.t1() (exit)
+        if (iRay.clip(bbox)) {
+            
+            // --- C. Ray Marching Loop ---
+            auto acc = grid->tree().getAccessor();
+            
+            // Parameters
+            float t = iRay.t0();
+            float tEnd = iRay.t1();
+            float dt = 0.5f; // Step size (0.5 voxel units for quality)
+            
+            float accumDensity = 0.0f;
+            float transmittance = 1.0f;
+
+            // Loop until we leave the volume or become opaque
+            while (t < tEnd) {
+                // Get current position along ray
+                nanovdb::Vec3f pos = iRay(t);
+                
+                // Round to integer coordinate (Nearest Neighbor Sampling)
+                nanovdb::Coord iPos = nanovdb::math::RoundDown<nanovdb::Coord>(pos);
+                
+                // Fetch Density (Fast!)
+                float density = acc.getValue(iPos);
+
+                if (density > 0.0f) {
+                    // Physics: Beer's Law accumulation
+                    // float opacity = 1.0f - expf(-density * dt * density_scale);
+                    float opacity = density * 0.05f; // Simplified linear opacity
+
+                    accumDensity += opacity * transmittance;
+                    transmittance *= (1.0f - opacity);
+
+                    if (transmittance < 0.01f) break; // Early exit (Opaque)
+                }
+
+                t += dt;
+            }
+
+            // Final Color (White Smoke)
+            outputColor.x = accumDensity;
+            outputColor.y = accumDensity;
+            outputColor.z = accumDensity;
+        }
+    }
+
+    // --- D. Write to Screen ---
+    surf2Dwrite(outputColor, surface, x * sizeof(float4), y);
 }
 
 
@@ -130,4 +235,37 @@ extern "C" void VerifyVDB(void* handlePtr) {
     
     // 3. Wait for print to finish (printf buffer flush)
     cudaDeviceSynchronize();
+}
+
+extern "C" void LaunchRayMarch(
+    cudaSurfaceObject_t surface, 
+    int width, int height, 
+    void* handlePtr, // <--- Input is void*
+    float cX, float cY, float cZ,
+    float dX, float dY, float dZ,
+    float uX, float uY, float uZ,
+    float rX, float rY, float rZ,
+    float fov
+) {
+    // 1. Extract the Grid from the Opaque Handle INSIDE the .cu file
+    const nanovdb::FloatGrid* grid = nullptr;
+    if (handlePtr) {
+        grid = GetDeviceGrid(handlePtr);
+    }
+
+    // 2. Calculate Grid Dimensions
+    dim3 blockSize(16, 16);
+    dim3 gridSize((width + blockSize.x - 1) / blockSize.x, 
+                  (height + blockSize.y - 1) / blockSize.y);
+
+    // 3. Package Camera
+    KernelCamera cam;
+    cam.pos = make_float3(cX, cY, cZ);
+    cam.dir = make_float3(dX, dY, dZ);
+    cam.up = make_float3(uX, uY, uZ);
+    cam.right = make_float3(rX, rY, rZ);
+    cam.fov = fov;
+
+    // 4. Launch
+    RayMarchKernel<<<gridSize, blockSize>>>(surface, width, height, grid, cam);
 }

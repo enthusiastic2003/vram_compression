@@ -5,39 +5,17 @@
 #include "camera.h"
 #include "shader.h"
 #include <memory>
+
 // CUDA Includes
 #include <cuda_runtime.h>
 #include <cuda_gl_interop.h>
-#include <nanovdb/util/cuda/CudaDeviceBuffer.h> // <--- CRITICAL INCLUDE
-// #include <nanovdb/GridHandle.h> // <--- ADD THIS LINE
+#include <nanovdb/util/cuda/CudaDeviceBuffer.h>
 
 class Renderer {
-private:
-    GLFWwindow* window;
-    void renderScene();
-    void renderUI();
-    static void glfw_error_callback(int error, const char* description);
-    std::shared_ptr<VoxelLoader> m_voxelLoader;
-    Camera camera_;
-    Shader m_shader;
-    GLuint m_cubeVBO;
-    GLuint m_cubeVAO;
-    int width_;
-    int height_;
-    const char* title_;
-    GLFWwindow* window_;
-    GLuint m_volumeTextureID; // <-- Add this
-
-    // Transfer function parameters
-    glm::vec3 m_color1 = glm::vec3(0.1f, 0.2f, 1.0f);
-    glm::vec3 m_color2 = glm::vec3(1.0f, 1.0f, 1.0f);
-    float m_alpha1 = 0.01f;
-    float m_alpha2 = 0.4f;
-    float m_threshold = 0.1f;
 public:
     Renderer(int width, int height, const char* title)
         : width_(width), height_(height), title_(title),
-          window_(nullptr),
+          window(nullptr),
           camera_(3.0f, 45.0f)  // distance=3, fov=45
     {}
 
@@ -47,31 +25,51 @@ public:
     void run();
 
 private:
+    // Core members
+    GLFWwindow* window;
+    int width_;
+    int height_;
+    const char* title_;
+    std::shared_ptr<VoxelLoader> m_voxelLoader;
+    Camera camera_;
+
+    // Shader for displaying CUDA output
+    Shader m_shader;
+
+    // CUDA-OpenGL Interop
+    GLuint m_cudaOutputTex = 0;
+    cudaGraphicsResource* m_cudaResource = nullptr;
+    void* m_deviceHandle = nullptr;  // NanoVDB grid on device
+
+    // Full-screen quad for displaying CUDA output
+    GLuint m_quadVAO = 0;
+    GLuint m_quadVBO = 0;
+
+    // Transfer function parameters
+    glm::vec3 m_color1 = glm::vec3(0.1f, 0.2f, 1.0f);
+    glm::vec3 m_color2 = glm::vec3(1.0f, 1.0f, 1.0f);
+    float m_alpha1 = 0.01f;
+    float m_alpha2 = 0.4f;
+    float m_threshold = 0.1f;
+
+    // Rendering methods
+    void renderScene();
+    void renderUI();
+    void initCudaInterop(); 
+    void initQuad();
+
+    // Event handlers
     void handleMouseButton(int button, int action, int mods);
     void handleCursorPosition(double xpos, double ypos);
     void handleScroll(double xoffset, double yoffset);
     void handleKey(int key, int scancode, int action, int mods);
     void handleFramebufferSizeChange(int width, int height);
 
-
+    // GLFW callbacks
+    static void glfw_error_callback(int error, const char* description);
     static void mouse_button_callback(GLFWwindow* window, int button, int action, int mods);
     static void cursor_position_callback(GLFWwindow* window, double xpos, double ypos);
     static void scroll_callback(GLFWwindow* window, double xoffset, double yoffset);
     static void defaultKeyCallback(GLFWwindow* window, int key, int scancode, int action, int mods);
     static void framebuffer_size_callback(GLFWwindow* window, int width, int height);
-
-    GLuint m_cudaOutputTex = 0;       // The OpenGL Texture ID
-    cudaGraphicsResource* m_cudaResource = nullptr; // The link between GL and CUDA
-    
-    // --- NEW: Screen Quad Members ---
-    GLuint m_quadVAO = 0;
-    GLuint m_quadVBO = 0;
-    Shader m_screenShader; // A simple pass-through shader
-
-    // Helper to initialize the texture and quad
-    void initCudaInterop(); 
-    void initQuad();
-
-    // nanovdb::GridHandle<nanovdb::cuda::DeviceBuffer> m_deviceHandle;
-    void* m_deviceHandle = nullptr;
 };

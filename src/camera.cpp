@@ -18,7 +18,7 @@ Camera::Camera(float distance, float fov)
       sensitivity_(0.25f),
       zoomSpeed_(0.5f),
       minDistance_(1.0f),
-      maxDistance_(20.0f),
+      maxDistance_(2000.0f),
       minPitch_(-89.0f),
       maxPitch_(89.0f),
       defaultDistance_(distance),
@@ -103,9 +103,9 @@ glm::vec3 Camera::getPosition() const {
     return pos;
 }
 
-glm::vec3 Camera::getDirection() const {
-    return glm::normalize(target_ - getPosition());
-}
+// glm::vec3 Camera::getDirection() const {
+//     return glm::normalize(target_ - getPosition());
+// }
 
 void Camera::setDistance(float distance) { 
     distance_ = distance; 
@@ -178,4 +178,18 @@ void Camera::clampDistance() {
 
 void Camera::clampPitch() {
     pitch_ = std::max(minPitch_, std::min(pitch_, maxPitch_));
+}
+
+glm::vec3 Camera::getUp() const {
+    return up_;
+}
+
+float Camera::getFOV() const {
+    return fov_;
+}
+
+// Also ensure getDirection is implemented if you used it earlier
+glm::vec3 Camera::getDirection() const {
+    // Assuming the camera looks at target from position
+    return glm::normalize(target_ - getPosition());
 }
