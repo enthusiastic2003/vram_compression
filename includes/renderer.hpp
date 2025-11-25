@@ -6,6 +6,10 @@
 #include "shader.h"
 #include <memory>
 
+// ImGui forward declarations
+struct ImDrawList;
+struct ImVec2;
+
 // CUDA Includes
 #include <cuda_runtime.h>
 #include <cuda_gl_interop.h>
@@ -25,6 +29,8 @@ public:
     void run();
 
 private:
+    
+        
     // Core members
     GLFWwindow* window;
     int width_;
@@ -32,6 +38,7 @@ private:
     const char* title_;
     std::shared_ptr<VoxelLoader> m_voxelLoader;
     Camera camera_;
+
 
     // Shader for displaying CUDA output
     Shader m_shader;
@@ -57,6 +64,13 @@ private:
     void renderUI();
     void initCudaInterop(); 
     void initQuad();
+    
+    // Transfer function UI helpers
+    void DrawGradientPreview();
+    void DrawControlPointsCanvas();
+    void DrawPointControls();
+    void DrawPresetButtons();
+    void DrawHistogram(ImDrawList* draw_list, const ImVec2& pos, const ImVec2& size);
 
     // Event handlers
     void handleMouseButton(int button, int action, int mods);

@@ -275,6 +275,188 @@ void Renderer::renderScene() {
     glBindVertexArray(0);
     glBindTexture(GL_TEXTURE_2D, 0);
 }
+//prak
+void Renderer::DrawGradientPreview() {
+    ImDrawList* draw_list = ImGui::GetWindowDrawList();
+    ImVec2 canvas_pos = ImGui::GetCursorScreenPos();
+    ImVec2 canvas_size = ImGui::GetContentRegionAvail();
+    canvas_size.y = 50.0f;
+    
+    // Draw gradient background with professional styling
+    draw_list->AddRectFilled(canvas_pos, 
+                            ImVec2(canvas_pos.x + canvas_size.x, canvas_pos.y + canvas_size.y), 
+                            IM_COL32(25, 25, 25, 255));
+    
+    // Create a smooth gradient from color1 to color2
+    const int segments = 256;
+    for (int i = 0; i < segments; ++i) {
+        float t = i / float(segments - 1);
+        
+        // Interpolate color
+        glm::vec3 color = m_color1 + t * (m_color2 - m_color1);
+        // Interpolate alpha
+        float alpha = m_alpha1 + t * (m_alpha2 - m_alpha1);
+        
+        float x1 = canvas_pos.x + t * canvas_size.x;
+        float x2 = canvas_pos.x + (t + 1.0f/segments) * canvas_size.x;
+        
+        draw_list->AddRectFilled(
+            ImVec2(x1, canvas_pos.y),
+            ImVec2(x2, canvas_pos.y + canvas_size.y),
+            ImColor(color.r, color.g, color.b, alpha)
+        );
+    }
+    
+    // Draw border with subtle styling
+    draw_list->AddRect(canvas_pos, 
+                      ImVec2(canvas_pos.x + canvas_size.x, canvas_pos.y + canvas_size.y), 
+                      IM_COL32(100, 100, 100, 255), 0.0f, 0, 1.5f);
+    
+    // Draw value markers
+    for (int i = 0; i <= 4; ++i) {
+        float x = canvas_pos.x + (i / 4.0f) * canvas_size.x;
+        draw_list->AddLine(ImVec2(x, canvas_pos.y + canvas_size.y - 10), 
+                          ImVec2(x, canvas_pos.y + canvas_size.y), 
+                          IM_COL32(200, 200, 200, 150));
+        char label[8];
+        snprintf(label, sizeof(label), "%.1f", i / 4.0f);
+        draw_list->AddText(ImVec2(x - 8, canvas_pos.y + canvas_size.y + 2), 
+                          IM_COL32(200, 200, 200, 255), label);
+    }
+    
+    ImGui::Dummy(ImVec2(canvas_size.x, canvas_size.y + 20));
+}
+
+void Renderer::DrawControlPointsCanvas() {
+    ImDrawList* draw_list = ImGui::GetWindowDrawList();
+    ImVec2 canvas_pos = ImGui::GetCursorScreenPos();
+    ImVec2 canvas_size = ImGui::GetContentRegionAvail();
+    canvas_size.y = 120.0f;
+    
+    // Draw professional background
+    draw_list->AddRectFilled(canvas_pos, 
+                            ImVec2(canvas_pos.x + canvas_size.x, canvas_pos.y + canvas_size.y), 
+                            IM_COL32(30, 30, 30, 255));
+    
+    // Draw grid with subtle styling
+    for (int i = 0; i <= 10; ++i) {
+        float x = canvas_pos.x + (i / 10.0f) * canvas_size.x;
+        draw_list->AddLine(ImVec2(x, canvas_pos.y), ImVec2(x, canvas_pos.y + canvas_size.y),
+                          IM_COL32(60, 60, 60, 100));
+    }
+    for (int i = 0; i <= 5; ++i) {
+        float y = canvas_pos.y + (i / 5.0f) * canvas_size.y;
+        draw_list->AddLine(ImVec2(canvas_pos.x, y), ImVec2(canvas_pos.x + canvas_size.x, y),
+                          IM_COL32(60, 60, 60, 100));
+    }
+    
+    // Draw opacity curve
+    std::vector<ImVec2> curve_points;
+    for (int i = 0; i <= 100; ++i) {
+        float t = i / 100.0f;
+        float alpha = m_alpha1 + t * (m_alpha2 - m_alpha1);
+        float x = canvas_pos.x + t * canvas_size.x;
+        float y = canvas_pos.y + (1.0f - alpha) * canvas_size.y;
+        curve_points.push_back(ImVec2(x, y));
+    }
+    
+    if (curve_points.size() >= 2) {
+        draw_list->AddPolyline(curve_points.data(), curve_points.size(), 
+                              IM_COL32(76, 175, 255, 220), false, 3.0f);
+    }
+    
+    // Draw control points
+    ImVec2 start_point(canvas_pos.x, canvas_pos.y + (1.0f - m_alpha1) * canvas_size.y);
+    ImVec2 end_point(canvas_pos.x + canvas_size.x, canvas_pos.y + (1.0f - m_alpha2) * canvas_size.y);
+    
+    // Start control point
+    draw_list->AddCircleFilled(start_point, 6.0f, ImColor(m_color1.r, m_color1.g, m_color1.b));
+    draw_list->AddCircle(start_point, 6.0f, IM_COL32(255, 255, 255, 200), 0, 2.0f);
+    
+    // End control point
+    draw_list->AddCircleFilled(end_point, 6.0f, ImColor(m_color2.r, m_color2.g, m_color2.b));
+    draw_list->AddCircle(end_point, 6.0f, IM_COL32(255, 255, 255, 200), 0, 2.0f);
+    
+    // Draw border
+    draw_list->AddRect(canvas_pos, 
+                      ImVec2(canvas_pos.x + canvas_size.x, canvas_pos.y + canvas_size.y), 
+                      IM_COL32(100, 100, 100, 255));
+    
+    ImGui::Dummy(canvas_size);
+}
+
+void Renderer::DrawPointControls() {
+    ImGui::PushItemWidth(-1);
+    
+    // Two-column layout for controls
+    if (ImGui::BeginTable("tf_controls", 2, ImGuiTableFlags_SizingFixedFit)) {
+        ImGui::TableNextColumn();
+        ImGui::Text("Start Point");
+        ImGui::ColorEdit3("##StartColor", &m_color1.x, ImGuiColorEditFlags_NoInputs);
+        ImGui::SliderFloat("##StartAlpha", &m_alpha1, 0.0f, 1.0f, "Alpha: %.2f");
+        
+        ImGui::TableNextColumn();
+        ImGui::Text("End Point");
+        ImGui::ColorEdit3("##EndColor", &m_color2.x, ImGuiColorEditFlags_NoInputs);
+        ImGui::SliderFloat("##EndAlpha", &m_alpha2, 0.0f, 1.0f, "Alpha: %.2f");
+        
+        ImGui::EndTable();
+    }
+    
+    // Global controls
+    ImGui::SliderFloat("Density Threshold", &m_threshold, 0.0f, 1.0f, "%.3f");
+    
+    // Stats
+    ImGui::Text("Opacity Range: %.2f - %.2f", m_alpha1, m_alpha2);
+    
+    ImGui::PopItemWidth();
+}
+
+void Renderer::DrawPresetButtons() {
+    // Preset buttons in a grid
+    if (ImGui::BeginTable("presets", 3, ImGuiTableFlags_SizingFixedFit)) {
+        ImGui::TableNextColumn();
+        if (ImGui::Button("Grayscale", ImVec2(-1, 0))) {
+            m_color1 = glm::vec3(0.1f, 0.1f, 0.1f);
+            m_color2 = glm::vec3(1.0f, 1.0f, 1.0f);
+            m_alpha1 = 0.0f;
+            m_alpha2 = 1.0f;
+        }
+        
+        ImGui::TableNextColumn();
+        if (ImGui::Button("Rainbow", ImVec2(-1, 0))) {
+            m_color1 = glm::vec3(0.0f, 0.0f, 1.0f);
+            m_color2 = glm::vec3(1.0f, 0.0f, 0.0f);
+            m_alpha1 = 0.1f;
+            m_alpha2 = 0.8f;
+        }
+        
+        ImGui::TableNextColumn();
+        if (ImGui::Button("Hot Metal", ImVec2(-1, 0))) {
+            m_color1 = glm::vec3(0.0f, 0.0f, 0.0f);
+            m_color2 = glm::vec3(1.0f, 1.0f, 0.0f);
+            m_alpha1 = 0.0f;
+            m_alpha2 = 0.9f;
+        }
+        
+        ImGui::EndTable();
+    }
+    
+    // Action buttons
+    ImGui::Spacing();
+    if (ImGui::Button("Reset to Default", ImVec2(-1, 0))) {
+        m_color1 = glm::vec3(0.1f, 0.2f, 1.0f);
+        m_color2 = glm::vec3(1.0f, 1.0f, 1.0f);
+        m_alpha1 = 0.01f;
+        m_alpha2 = 0.4f;
+        m_threshold = 0.1f;
+    }
+}
+
+void Renderer::DrawHistogram(ImDrawList* draw_list, const ImVec2& pos, const ImVec2& size) {
+    // Placeholder - you can implement this later when you have histogram data
+    // This function is declared but won't be called until you add histogram functionality
+}
 
 void Renderer::renderUI() {
     // Start new ImGui frame
@@ -282,13 +464,32 @@ void Renderer::renderUI() {
     ImGui_ImplGlfw_NewFrame();
     ImGui::NewFrame();
 
-    // Build UI
-    ImGui::Begin("Transfer Function Editor");
-    ImGui::ColorEdit3("Start Color", &m_color1.x);
-    ImGui::ColorEdit3("End Color", &m_color2.x);
-    ImGui::SliderFloat("Start Alpha", &m_alpha1, 0.0f, 1.0f);
-    ImGui::SliderFloat("End Alpha", &m_alpha2, 0.0f, 1.0f);
-    ImGui::SliderFloat("Threshold", &m_threshold, 0.0f, 1.0f);
+    // Build Professional Transfer Function Editor
+    ImGui::Begin("Transfer Function Editor", nullptr, ImGuiWindowFlags_NoCollapse);
+    
+    // Header with description
+    ImGui::TextColored(ImVec4(0.4f, 0.8f, 1.0f, 1.0f), "Volume Color Mapping");
+    ImGui::TextWrapped("Adjust how density values map to color and opacity for volume rendering.");
+    ImGui::Separator();
+    
+    // Gradient Preview Section
+    ImGui::Text("Gradient Preview");
+    DrawGradientPreview();
+    
+    // Control Points Section
+    ImGui::Text("Opacity Control Points");
+    DrawControlPointsCanvas();
+    
+    // Color and Opacity Controls
+    ImGui::Separator();
+    ImGui::Text("Point Properties");
+    DrawPointControls();
+    
+    // Presets Section
+    ImGui::Separator();
+    ImGui::Text("Presets & Tools");
+    DrawPresetButtons();
+    
     ImGui::End();
 
     camera_.renderImGuiControls();
