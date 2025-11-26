@@ -54,6 +54,7 @@ __global__ void RayMarchKernel(
     int width, 
     int height, 
     const nanovdb::FloatGrid* grid,
+    cudaTextureObject_t tfTexture,  // <--- NEW ARGUMENT
     KernelCamera cam
 ) 
 {
@@ -84,7 +85,8 @@ __global__ void RayMarchKernel(
     // --- B. Ray Setup ---
     nanovdb::Ray<float> iRay(rayOrigin, rayDir);
     
-    float4 outputColor = make_float4(0.0f, 0.0f, 0.0f, 1.0f); // Black Background
+    // Background color (Dark gray/black)
+    float4 finalColor = make_float4(0.0f, 0.0f, 0.0f, 1.0f); 
 
     if (grid) {
         // Transform Ray: World Space -> Index Space (Voxels)
@@ -94,54 +96,70 @@ __global__ void RayMarchKernel(
         nanovdb::CoordBBox bbox = grid->tree().bbox();
 
         // Clip Ray against the Volume Box
-        // This sets iRay.t0() (entry) and iRay.t1() (exit)
         if (iRay.clip(bbox)) {
             
             // --- C. Ray Marching Loop ---
             auto acc = grid->tree().getAccessor();
             
-            // Parameters
             float t = iRay.t0();
             float tEnd = iRay.t1();
-            float dt = 0.5f; // Step size (0.5 voxel units for quality)
+            float dt = 0.5f; // Step size
             
-            float accumDensity = 0.0f;
+            // Accumulators for Front-to-Back Compositing
+            float3 accumColor = make_float3(0.0f, 0.0f, 0.0f);
             float transmittance = 1.0f;
 
             // Loop until we leave the volume or become opaque
             while (t < tEnd) {
-                // Get current position along ray
                 nanovdb::Vec3f pos = iRay(t);
-                
-                // Round to integer coordinate (Nearest Neighbor Sampling)
                 nanovdb::Coord iPos = nanovdb::math::RoundDown<nanovdb::Coord>(pos);
                 
-                // Fetch Density (Fast!)
+                // 1. Fetch Density
                 float density = acc.getValue(iPos);
 
+                // 2. Sample Transfer Function using Density
+                // This handles Thresholding & Color automatically!
                 if (density > 0.0f) {
-                    // Physics: Beer's Law accumulation
-                    // float opacity = 1.0f - expf(-density * dt * density_scale);
-                    float opacity = density * 0.05f; // Simplified linear opacity
+                    float4 tfSample = tex1D<float4>(tfTexture, density);
+                    
+                    // tfSample.xyz = Color, tfSample.w = Alpha
+                    
+                    // Only process if the voxel contributes visibility
+                    if (tfSample.w > 0.0f) {
+                        // Scale alpha by step size to prevent volume from looking too solid
+                        // (Approximation of Beer's Law)
+                        float alpha = tfSample.w * 0.5f; // 0.5f is an arbitrary scaling factor for "thickness"
 
-                    accumDensity += opacity * transmittance;
-                    transmittance *= (1.0f - opacity);
+                        // Front-to-Back Compositing Formula
+                        // Color += SourceColor * SourceAlpha * Transmittance
+                        accumColor.x += tfSample.x * alpha * transmittance;
+                        accumColor.y += tfSample.y * alpha * transmittance;
+                        accumColor.z += tfSample.z * alpha * transmittance;
 
-                    if (transmittance < 0.01f) break; // Early exit (Opaque)
+                        // Transmittance *= (1.0 - SourceAlpha)
+                        transmittance *= (1.0f - alpha);
+
+                        // Early Ray Termination (Optimization)
+                        if (transmittance < 0.01f) {
+                            transmittance = 0.0f;
+                            break; 
+                        }
+                    }
                 }
 
                 t += dt;
             }
 
-            // Final Color (White Smoke)
-            outputColor.x = accumDensity;
-            outputColor.y = accumDensity;
-            outputColor.z = accumDensity;
+            // Write final accumulated color
+            finalColor.x = accumColor.x;
+            finalColor.y = accumColor.y;
+            finalColor.z = accumColor.z;
+            // finalColor.w remains 1.0
         }
     }
 
     // --- D. Write to Screen ---
-    surf2Dwrite(outputColor, surface, x * sizeof(float4), y);
+    surf2Dwrite(finalColor, surface, x * sizeof(float4), y);
 }
 
 
@@ -243,6 +261,7 @@ extern "C" void LaunchRayMarch(
     cudaSurfaceObject_t surface, 
     int width, int height, 
     void* handlePtr, // <--- Input is void*
+    cudaTextureObject_t tfTexture, // <--- ADD THIS PARAMETER
     float cX, float cY, float cZ,
     float dX, float dY, float dZ,
     float uX, float uY, float uZ,
@@ -269,5 +288,5 @@ extern "C" void LaunchRayMarch(
     cam.fov = fov;
 
     // 4. Launch
-    RayMarchKernel<<<gridSize, blockSize>>>(surface, width, height, grid, cam);
+    RayMarchKernel<<<gridSize, blockSize>>>(surface, width, height, grid, tfTexture, cam);
 }

@@ -137,7 +137,7 @@ bool Renderer::initialize(std::shared_ptr<VoxelLoader> loader) {
     }
 
     // Compress the VDB grid using our vdb_compressor
-    float compressionQuality = 0.5f; // User-defined quality parameter [0.0 - 1.0]
+    float compressionQuality = 0.6f; // User-defined quality parameter [0.0 - 1.0]
     vdb_compressor compressor(m_grid, compressionQuality);
     m_grid = compressor.compress("f2"); // Using f2 similarity metric
 
@@ -163,6 +163,29 @@ bool Renderer::initialize(std::shared_ptr<VoxelLoader> loader) {
 
     m_deviceHandle = AllocAndUploadVDB(handle.data(), handle.size(), stream);
     VerifyVDB(m_deviceHandle);
+
+    // --- TRANSFER FUNCTION SETUP ---
+    // 1. Allocate CUDA Array for 1D Texture
+    cudaChannelFormatDesc channelDesc = cudaCreateChannelDesc<float4>();
+    cudaMallocArray(&m_tfArray, &channelDesc, 256, 1); // 256 width, 1 height
+
+    // 2. Create Texture Object
+    cudaResourceDesc resDesc;
+    memset(&resDesc, 0, sizeof(resDesc));
+    resDesc.resType = cudaResourceTypeArray;
+    resDesc.res.array.array = m_tfArray;
+
+    cudaTextureDesc texDesc;
+    memset(&texDesc, 0, sizeof(texDesc));
+    texDesc.addressMode[0] = cudaAddressModeClamp; // Clamp to edge
+    texDesc.filterMode = cudaFilterModeLinear;     // Linear interpolation (Smooth!)
+    texDesc.readMode = cudaReadModeElementType;
+    texDesc.normalizedCoords = 1;                  // Use 0.0 to 1.0 coords
+
+    cudaCreateTextureObject(&m_tfTexture, &resDesc, &texDesc, NULL);
+
+    // 3. Perform initial upload so screen isn't black
+    UpdateTransferFunctionOnGPU();
 
     cudaStreamSynchronize(stream);
     cudaStreamDestroy(stream);
@@ -223,6 +246,37 @@ void Renderer::initCudaInterop() {
     }
 }
 
+// Add this helper function definition
+void Renderer::UpdateTransferFunctionOnGPU() {
+    const int TF_SIZE = 256;
+    std::vector<float4> tfData(TF_SIZE);
+
+    for (int i = 0; i < TF_SIZE; ++i) {
+        float density = i / (float)(TF_SIZE - 1);
+
+        // 1. Threshold Logic (The Cutoff)
+        if (density < m_threshold) {
+            tfData[i] = make_float4(0.0f, 0.0f, 0.0f, 0.0f);
+        } 
+        else {
+            // 2. Linear Interpolation Logic
+            float t = density; // Simple linear mapping for now
+            
+            // Interpolate Color
+            glm::vec3 c = m_color1 + t * (m_color2 - m_color1);
+            
+            // Interpolate Alpha
+            float a = m_alpha1 + t * (m_alpha2 - m_alpha1);
+
+            tfData[i] = make_float4(c.r, c.g, c.b, a);
+        }
+    }
+
+    // 3. Upload to CUDA Array
+    // Note: m_tfArray needs to be allocated in initialize() (see below)
+    cudaMemcpyToArray(m_tfArray, 0, 0, tfData.data(), TF_SIZE * sizeof(float4), cudaMemcpyHostToDevice);
+}
+
 void Renderer::renderScene() {
     // Map OpenGL texture to CUDA
     cudaGraphicsMapResources(1, &m_cudaResource, 0);
@@ -247,9 +301,11 @@ void Renderer::renderScene() {
     float fovRad = glm::radians(camera_.getFOV());
 
     // Launch CUDA ray marching kernel
+    // IMPORTANT: We added 'm_tfTexture' to this call
     LaunchRayMarch(
         surface, width_, height_, 
         m_deviceHandle,
+        m_tfTexture,          // <--- NEW: Pass the Transfer Function Texture here
         cPos.x, cPos.y, cPos.z,
         cDir.x, cDir.y, cDir.z,
         cLocalUp.x, cLocalUp.y, cLocalUp.z,
@@ -385,34 +441,37 @@ void Renderer::DrawControlPointsCanvas() {
     ImGui::Dummy(canvas_size);
 }
 
-void Renderer::DrawPointControls() {
+// Change void to bool
+bool Renderer::DrawPointControls() {
+    bool changed = false;
+    
     ImGui::PushItemWidth(-1);
     
-    // Two-column layout for controls
     if (ImGui::BeginTable("tf_controls", 2, ImGuiTableFlags_SizingFixedFit)) {
         ImGui::TableNextColumn();
         ImGui::Text("Start Point");
-        ImGui::ColorEdit3("##StartColor", &m_color1.x, ImGuiColorEditFlags_NoInputs);
-        ImGui::SliderFloat("##StartAlpha", &m_alpha1, 0.0f, 1.0f, "Alpha: %.2f");
+        // Check if values change
+        changed |= ImGui::ColorEdit3("##StartColor", &m_color1.x);
+        changed |= ImGui::SliderFloat("##StartAlpha", &m_alpha1, 0.0f, 1.0f);
         
         ImGui::TableNextColumn();
         ImGui::Text("End Point");
-        ImGui::ColorEdit3("##EndColor", &m_color2.x, ImGuiColorEditFlags_NoInputs);
-        ImGui::SliderFloat("##EndAlpha", &m_alpha2, 0.0f, 1.0f, "Alpha: %.2f");
+        changed |= ImGui::ColorEdit3("##EndColor", &m_color2.x);
+        changed |= ImGui::SliderFloat("##EndAlpha", &m_alpha2, 0.0f, 1.0f);
         
         ImGui::EndTable();
     }
     
-    // Global controls
-    ImGui::SliderFloat("Density Threshold", &m_threshold, 0.0f, 1.0f, "%.3f");
-    
-    // Stats
-    ImGui::Text("Opacity Range: %.2f - %.2f", m_alpha1, m_alpha2);
+    changed |= ImGui::SliderFloat("Density Threshold", &m_threshold, 0.0f, 1.0f);
     
     ImGui::PopItemWidth();
+    return changed;
 }
 
-void Renderer::DrawPresetButtons() {
+// Returns true if a preset was clicked
+bool Renderer::DrawPresetButtons() {
+    bool clicked = false;
+
     // Preset buttons in a grid
     if (ImGui::BeginTable("presets", 3, ImGuiTableFlags_SizingFixedFit)) {
         ImGui::TableNextColumn();
@@ -421,6 +480,7 @@ void Renderer::DrawPresetButtons() {
             m_color2 = glm::vec3(1.0f, 1.0f, 1.0f);
             m_alpha1 = 0.0f;
             m_alpha2 = 1.0f;
+            clicked = true;
         }
         
         ImGui::TableNextColumn();
@@ -429,6 +489,7 @@ void Renderer::DrawPresetButtons() {
             m_color2 = glm::vec3(1.0f, 0.0f, 0.0f);
             m_alpha1 = 0.1f;
             m_alpha2 = 0.8f;
+            clicked = true;
         }
         
         ImGui::TableNextColumn();
@@ -437,6 +498,7 @@ void Renderer::DrawPresetButtons() {
             m_color2 = glm::vec3(1.0f, 1.0f, 0.0f);
             m_alpha1 = 0.0f;
             m_alpha2 = 0.9f;
+            clicked = true;
         }
         
         ImGui::EndTable();
@@ -450,7 +512,10 @@ void Renderer::DrawPresetButtons() {
         m_alpha1 = 0.01f;
         m_alpha2 = 0.4f;
         m_threshold = 0.1f;
+        clicked = true;
     }
+
+    return clicked;
 }
 
 void Renderer::DrawHistogram(ImDrawList* draw_list, const ImVec2& pos, const ImVec2& size) {
@@ -474,31 +539,50 @@ void Renderer::renderUI() {
     
     // Gradient Preview Section
     ImGui::Text("Gradient Preview");
+    // This is purely visual, no interaction logic needed yet
     DrawGradientPreview();
     
     // Control Points Section
     ImGui::Text("Opacity Control Points");
+    // This is currently visual only
     DrawControlPointsCanvas();
     
+    // --- INTERACTION LOGIC ---
+    bool tfChanged = false;
+
     // Color and Opacity Controls
     ImGui::Separator();
     ImGui::Text("Point Properties");
-    DrawPointControls();
+    // If the user drags a slider, we mark changed as true
+    if (DrawPointControls()) {
+        tfChanged = true;
+    }
     
     // Presets Section
     ImGui::Separator();
     ImGui::Text("Presets & Tools");
-    DrawPresetButtons();
+    // If the user clicks a preset, we mark changed as true
+    if (DrawPresetButtons()) {
+        tfChanged = true;
+    }
     
+    // --- GPU UPDATE ---
+    // Only upload to the GPU if something actually changed this frame.
+    // This prevents PCI-E bus congestion.
+    if (tfChanged) {
+        UpdateTransferFunctionOnGPU(); 
+    }
+
     ImGui::End();
 
+    // Render Camera Controls (if you have them)
     camera_.renderImGuiControls();
 
     // Render ImGui
     ImGui::Render();
     ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
 
-    // Handle multiple OS windows
+    // Handle multiple OS windows (Viewports)
     ImGuiIO& io = ImGui::GetIO();
     if (io.ConfigFlags & ImGuiConfigFlags_ViewportsEnable) {
         GLFWwindow* backup_current_context = glfwGetCurrentContext();

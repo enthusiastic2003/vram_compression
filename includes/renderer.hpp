@@ -38,7 +38,9 @@ private:
     const char* title_;
     std::shared_ptr<VoxelLoader> m_voxelLoader;
     Camera camera_;
-
+    cudaTextureObject_t m_volumeTex = 0;
+    cudaTextureObject_t m_tfTexture = 0;
+    cudaArray_t m_tfArray = nullptr;    
 
     // Shader for displaying CUDA output
     Shader m_shader;
@@ -68,8 +70,8 @@ private:
     // Transfer function UI helpers
     void DrawGradientPreview();
     void DrawControlPointsCanvas();
-    void DrawPointControls();
-    void DrawPresetButtons();
+    bool DrawPointControls();
+    bool DrawPresetButtons();
     void DrawHistogram(ImDrawList* draw_list, const ImVec2& pos, const ImVec2& size);
 
     // Event handlers
@@ -78,6 +80,7 @@ private:
     void handleScroll(double xoffset, double yoffset);
     void handleKey(int key, int scancode, int action, int mods);
     void handleFramebufferSizeChange(int width, int height);
+    void UpdateTransferFunctionOnGPU();
 
     // GLFW callbacks
     static void glfw_error_callback(int error, const char* description);

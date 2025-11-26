@@ -18,6 +18,7 @@ extern "C" {
         cudaSurfaceObject_t surface, 
         int width, int height, 
         void* handle,                       // <--- UPDATED: Opaque Pointer
+        cudaTextureObject_t tfTexture, // <--- ADD THIS PARAMETER
         float cX, float cY, float cZ,       // Camera Position
         float dX, float dY, float dZ,       // Camera Direction
         float uX, float uY, float uZ,       // Camera Up
