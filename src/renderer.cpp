@@ -30,6 +30,52 @@ void Renderer::glfw_error_callback(int error, const char* description) {
     std::cerr << "GLFW Error " << error << ": " << description << std::endl;
 }
 
+// [Renderer.cpp] Add this new function
+
+void Renderer::RecompressVolume() {
+    if (!m_originalGrid) return;
+
+    // 1. Map UI Selection to Paper's Metrics [cite: 169-173]
+    std::string metricCode;
+    switch (m_selectedMetric) {
+        case 0: metricCode = "f1"; break; // Closest point
+        case 1: metricCode = "f2"; break; // Farthest point
+        case 2: metricCode = "f3"; break; // Median point
+        default: metricCode = "f2";
+    }
+
+    std::cout << "[Extension] Recompressing... Rate: " << m_compressionQuality 
+              << " | Metric: " << metricCode << std::endl;
+
+    // 2. Prepare Source Grid
+    // We must copy the original because the compressor might prune/modify the grid in place
+    openvdb::FloatGrid::Ptr gridToCompress = m_originalGrid->deepCopy();
+
+    // 3. Execute Compression (Algorithm 1)
+    // This runs on the CPU and might take 100-500ms depending on data size
+    vdb_compressor compressor(gridToCompress, m_compressionQuality);
+    auto resultGrid = compressor.compress(metricCode); 
+
+    // 4. Convert to NanoVDB
+    auto handle = nanovdb::tools::createNanoGrid<openvdb::FloatGrid, float, nanovdb::cuda::DeviceBuffer>(*resultGrid);
+
+    // 5. Update GPU Memory
+    // IMPORTANT: Free previous VDB to prevent VRAM leak
+    if (m_deviceHandle != nullptr) {
+        FreeVDB(m_deviceHandle); 
+    }
+    
+    cudaStream_t stream;
+    cudaStreamCreate(&stream);
+    m_deviceHandle = AllocAndUploadVDB(handle.data(), handle.size(), stream);
+    
+    // Wait for upload to finish before we let the renderer continue
+    cudaStreamSynchronize(stream);
+    cudaStreamDestroy(stream);
+
+    std::cout << "-> Done. Active Voxels: " << resultGrid->activeVoxelCount() << std::endl;
+}
+
 bool Renderer::initialize(std::shared_ptr<VoxelLoader> loader) {
     // Voxel Processing
     m_voxelLoader = loader;
@@ -135,11 +181,22 @@ bool Renderer::initialize(std::shared_ptr<VoxelLoader> loader) {
             }
         }
     }
+    
 
     // Compress the VDB grid using our vdb_compressor
-    float compressionQuality = 0.6f; // User-defined quality parameter [0.0 - 1.0]
-    vdb_compressor compressor(m_grid, compressionQuality);
-    m_grid = compressor.compress("f2"); // Using f2 similarity metric
+    float compressionQuality = 0.2f; // User-defined quality parameter [0.0 - 1.0]
+
+    // vdb_compressor compressor(m_grid, compressionQuality);
+    // m_grid = compressor.compress("f2"); // Using f2 similarity metric
+
+    // 1. SAVE THE ORIGINAL DATA
+    // We need a deep copy so we can re-compress from fresh source data every time.
+    m_originalGrid = m_grid->deepCopy();
+
+    // 2. PERFORM INITIAL COMPRESSION
+    // Instead of writing the compression code here, we call our new helper.
+    // This ensures what we see on startup matches the default UI values.
+    RecompressVolume();
 
 
     // Convert to NanoVDB for CUDA
@@ -161,8 +218,8 @@ bool Renderer::initialize(std::shared_ptr<VoxelLoader> loader) {
     cudaStream_t stream;
     cudaStreamCreate(&stream);
 
-    m_deviceHandle = AllocAndUploadVDB(handle.data(), handle.size(), stream);
-    VerifyVDB(m_deviceHandle);
+    // m_deviceHandle = AllocAndUploadVDB(handle.data(), handle.size(), stream);
+    // VerifyVDB(m_deviceHandle);
 
     // --- TRANSFER FUNCTION SETUP ---
     // 1. Allocate CUDA Array for 1D Texture
@@ -565,6 +622,36 @@ void Renderer::renderUI() {
     if (DrawPresetButtons()) {
         tfChanged = true;
     }
+
+    // --- NEW SECTION: COMPRESSION EXTENSION ---
+    ImGui::Separator();
+    ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.2f, 1.0f), "Algorithm Evaluation");
+
+    // 1. Similarity Function Selector (MCQ Style)
+    // The paper compares these three metrics (Eq 1, 2, 3)
+    const char* items[] = { 
+        "f1: Closest (Aggressive)", 
+        "f2: Farthest (Preserves Detail)", 
+        "f3: Median (Balanced)" 
+    };
+    
+    // Combo returns true immediately upon selection change
+    if (ImGui::Combo("Metric", &m_selectedMetric, items, IM_ARRAYSIZE(items))) {
+        RecompressVolume(); 
+    }
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Choose the heuristic for brick selection [Eq. 1-3].");
+
+    // 2. Fixed-Rate Slider
+    // Returns true while dragging, but we DON'T want to recompress then (too slow).
+    ImGui::SliderFloat("Quality Rate", &m_compressionQuality, 0.01f, 1.0f, "%.2f");
+
+    // Only trigger heavy recompression when user releases the mouse button
+    if (ImGui::IsItemDeactivatedAfterEdit()) {
+        RecompressVolume();
+    }
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Target compression rate. 1.0 = Lossless, 0.1 = 10% Size.");
+
+    ImGui::Separator();
     
     // --- GPU UPDATE ---
     // Only upload to the GPU if something actually changed this frame.

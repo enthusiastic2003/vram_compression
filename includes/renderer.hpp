@@ -14,6 +14,7 @@ struct ImVec2;
 #include <cuda_runtime.h>
 #include <cuda_gl_interop.h>
 #include <nanovdb/util/cuda/CudaDeviceBuffer.h>
+#include <openvdb/openvdb.h>
 
 class Renderer {
 public:
@@ -60,6 +61,15 @@ private:
     float m_alpha1 = 0.01f;
     float m_alpha2 = 0.4f;
     float m_threshold = 0.1f;
+
+    // EXTENSION: Evaluation Controls
+    openvdb::FloatGrid::Ptr m_originalGrid; // Backup of the original dense data
+    float m_compressionQuality = 0.2f;      // 0.0 to 1.0 (Higher = Less Compression)
+    int m_selectedMetric = 1;               // 0=f1, 1=f2, 2=f3
+
+    // Helper to handle CPU compression -> NanoVDB conversion -> GPU Upload
+    void RecompressVolume();
+
 
     // Rendering methods
     void renderScene();
