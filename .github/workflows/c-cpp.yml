@@ -1,0 +1,57 @@
+name: C/C++ CI and Release
+
+on:
+  push:
+    branches: [ "main" ]
+    tags: [ 'v*' ]        # trigger on version tags
+  pull_request:
+    branches: [ "main" ]
+  release:
+    types: [published]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y build-essential pkg-config libglfw3-dev
+
+    - name: Build project
+      run: make
+
+    - name: Archive build artifacts
+      run: |
+        mkdir -p release
+        cp viz3d release/
+        tar -czf viz3d-linux.tar.gz -C release viz3d
+
+    - name: Upload build artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: viz3d-linux
+        path: viz3d-linux.tar.gz
+
+  release:
+    # Only run when a tag or release is created
+    needs: build
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'release'
+
+    steps:
+    - name: Download built artifact
+      uses: actions/download-artifact@v4
+      with:
+        name: viz3d-linux
+
+    - name: Upload to GitHub Release
+      uses: softprops/action-gh-release@v2
+      with:
+        files: viz3d-linux.tar.gz
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
