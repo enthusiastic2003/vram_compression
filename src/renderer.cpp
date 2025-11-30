@@ -12,7 +12,7 @@
 #include <nanovdb/util/IO.h>
 #include "cuda_helpers.hpp"
 #include "vdb_compressor.h"
-
+#include "metrics.h" // <--- ADD THIS
 
 Renderer::~Renderer() {
     FreeVDB(m_deviceHandle);
@@ -31,6 +31,75 @@ void Renderer::glfw_error_callback(int error, const char* description) {
 }
 
 // [Renderer.cpp] Add this new function
+
+void Renderer::evaluateCompressionQuality() {
+    if (!m_originalGrid) {
+        std::cerr << "Error: No original grid available for quality evaluation" << std::endl;
+        return;
+    }
+    
+    // Create a temporary compressor to get compressed grid
+    vdb_compressor compressor(m_originalGrid, m_compressionQuality);
+    
+    // Get the current compressed grid using the selected metric
+    std::string metric_name;
+    switch (m_selectedMetric) {
+        case 0: metric_name = "f1"; break;
+        case 1: metric_name = "f2"; break;
+        case 2: metric_name = "f3"; break;
+        default: metric_name = "f2"; break;
+    }
+    
+    // Perform compression (Mirroring arguments from RecompressVolume to ensure accuracy)
+    auto compressed_grid = compressor.compress(metric_name, m_useROI, m_roiMin, m_roiMax);
+    
+    // Calculate quality metrics using the new class
+    m_qualityMetrics = QualityMetrics::calculate_quality_metrics(m_originalGrid, compressed_grid);
+}
+
+void Renderer::displayQualityMetrics() {
+    if (ImGui::CollapsingHeader("Quality Evaluation", ImGuiTreeNodeFlags_DefaultOpen)) {
+        ImGui::Spacing();
+        
+        if (ImGui::Button("Calculate MSE/PSNR", ImVec2(-1, 0))) {
+            evaluateCompressionQuality();
+        }
+        
+        if (ImGui::IsItemHovered()) {
+            ImGui::SetTooltip("Calculate Mean Squared Error and Peak Signal-to-Noise Ratio between original and compressed volumes");
+        }
+        
+        ImGui::Spacing();
+        
+        if (m_qualityMetrics.metrics_calculated) {
+            ImGui::Separator();
+            ImGui::Text("Quality Metrics Results:");
+            ImGui::Text("MSE: %.6f", m_qualityMetrics.mse);
+            ImGui::Text("PSNR: %.2f dB", m_qualityMetrics.psnr);
+            ImGui::Text("Compared Voxels: %zu", m_qualityMetrics.compared_voxels);
+            
+            // Quality interpretation with color coding
+            ImGui::Spacing();
+            ImGui::Text("Quality Assessment:");
+            if (m_qualityMetrics.psnr > 40.0f) {
+                ImGui::TextColored(ImVec4(0, 1, 0, 1), "Excellent (PSNR > 40 dB)");
+            } else if (m_qualityMetrics.psnr > 30.0f) {
+                ImGui::TextColored(ImVec4(0.5, 1, 0, 1), "Good (PSNR 30-40 dB)");
+            } else if (m_qualityMetrics.psnr > 20.0f) {
+                ImGui::TextColored(ImVec4(1, 1, 0, 1), "Acceptable (PSNR 20-30 dB)");
+            } else {
+                ImGui::TextColored(ImVec4(1, 0, 0, 1), "Poor (PSNR < 20 dB)");
+            }
+        } else {
+            ImGui::TextColored(ImVec4(1, 0.5, 0, 1), "Click 'Calculate MSE/PSNR' to see quality metrics");
+        }
+        
+        ImGui::Spacing();
+        ImGui::Separator();
+        ImGui::TextWrapped("MSE (Mean Squared Error): Lower is better");
+        ImGui::TextWrapped("PSNR (Peak Signal-to-Noise Ratio): Higher is better");
+    }
+}
 
 void Renderer::RecompressVolume() {
     if (!m_originalGrid) return;
@@ -601,6 +670,8 @@ void Renderer::renderUI() {
     // Control Points Section
     ImGui::Text("Opacity Control Points");
     DrawControlPointsCanvas();
+
+    displayQualityMetrics();
     
     // --- INTERACTION LOGIC ---
     bool tfChanged = false;       // For lightweight TF updates (GPU upload only)

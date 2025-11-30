@@ -5,6 +5,7 @@
 #include "camera.h"
 #include "shader.h"
 #include <memory>
+#include "metrics.h"
 
 // ImGui forward declarations
 struct ImDrawList;
@@ -103,4 +104,11 @@ private:
     static void scroll_callback(GLFWwindow* window, double xoffset, double yoffset);
     static void defaultKeyCallback(GLFWwindow* window, int key, int scancode, int action, int mods);
     static void framebuffer_size_callback(GLFWwindow* window, int width, int height);
+
+    // Quality metrics storage - SIMPLIFIED
+    QualityMetrics::Metrics m_qualityMetrics;
+
+    // Quality evaluation methods
+    void evaluateCompressionQuality();
+    void displayQualityMetrics();
 };
