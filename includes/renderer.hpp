@@ -42,6 +42,10 @@ private:
     cudaTextureObject_t m_volumeTex = 0;
     cudaTextureObject_t m_tfTexture = 0;
     cudaArray_t m_tfArray = nullptr;    
+    // Inside Renderer.h
+    int m_roiMin = 40;     // Default start of soft tissue (example)
+    int m_roiMax = 80;     // Default end of soft tissue (example)
+    bool m_useROI = false; // Toggle for your extension
 
     // Shader for displaying CUDA output
     Shader m_shader;

@@ -54,7 +54,7 @@ void Renderer::RecompressVolume() {
     // 3. Execute Compression (Algorithm 1)
     // This runs on the CPU and might take 100-500ms depending on data size
     vdb_compressor compressor(gridToCompress, m_compressionQuality);
-    auto resultGrid = compressor.compress(metricCode); 
+    auto resultGrid = compressor.compress(metricCode, m_useROI, m_roiMin, m_roiMax); 
 
     // 4. Convert to NanoVDB
     auto handle = nanovdb::tools::createNanoGrid<openvdb::FloatGrid, float, nanovdb::cuda::DeviceBuffer>(*resultGrid);
@@ -596,21 +596,19 @@ void Renderer::renderUI() {
     
     // Gradient Preview Section
     ImGui::Text("Gradient Preview");
-    // This is purely visual, no interaction logic needed yet
     DrawGradientPreview();
     
     // Control Points Section
     ImGui::Text("Opacity Control Points");
-    // This is currently visual only
     DrawControlPointsCanvas();
     
     // --- INTERACTION LOGIC ---
-    bool tfChanged = false;
+    bool tfChanged = false;       // For lightweight TF updates (GPU upload only)
+    bool compressionChanged = false; // For heavy Re-compression (Algorithm rerun)
 
     // Color and Opacity Controls
     ImGui::Separator();
     ImGui::Text("Point Properties");
-    // If the user drags a slider, we mark changed as true
     if (DrawPointControls()) {
         tfChanged = true;
     }
@@ -618,7 +616,6 @@ void Renderer::renderUI() {
     // Presets Section
     ImGui::Separator();
     ImGui::Text("Presets & Tools");
-    // If the user clicks a preset, we mark changed as true
     if (DrawPresetButtons()) {
         tfChanged = true;
     }
@@ -627,49 +624,77 @@ void Renderer::renderUI() {
     ImGui::Separator();
     ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.2f, 1.0f), "Algorithm Evaluation");
 
-    // 1. Similarity Function Selector (MCQ Style)
-    // The paper compares these three metrics (Eq 1, 2, 3)
+    // 1. Similarity Function Selector
     const char* items[] = { 
         "f1: Closest (Aggressive)", 
         "f2: Farthest (Preserves Detail)", 
         "f3: Median (Balanced)" 
     };
     
-    // Combo returns true immediately upon selection change
     if (ImGui::Combo("Metric", &m_selectedMetric, items, IM_ARRAYSIZE(items))) {
-        RecompressVolume(); 
+        compressionChanged = true;
     }
     if (ImGui::IsItemHovered()) ImGui::SetTooltip("Choose the heuristic for brick selection [Eq. 1-3].");
 
     // 2. Fixed-Rate Slider
-    // Returns true while dragging, but we DON'T want to recompress then (too slow).
     ImGui::SliderFloat("Quality Rate", &m_compressionQuality, 0.01f, 1.0f, "%.2f");
-
-    // Only trigger heavy recompression when user releases the mouse button
+    // Trigger recompression only when user releases the slider
     if (ImGui::IsItemDeactivatedAfterEdit()) {
-        RecompressVolume();
+        compressionChanged = true;
     }
-    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Target compression rate. 1.0 = Lossless, 0.1 = 10% Size.");
+
+    // 3. YOUR EXTENSION: ROI-Weighted Sorting
+    ImGui::Spacing();
+    ImGui::TextColored(ImVec4(0.2f, 1.0f, 0.4f, 1.0f), "Extension: Domain Knowledge");
+    
+    // The Toggle: Lets you A/B test the feature
+    if (ImGui::Checkbox("Enable ROI Priority", &m_useROI)) {
+        compressionChanged = true;
+    }
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Injects domain knowledge to prioritize specific intensity ranges (e.g., Soft Tissue) over high-contrast background.");
+
+    if (m_useROI) {
+        ImGui::Indent();
+        ImGui::Text("Interest Range (0-255)");
+        
+        // DragIntRange2 is perfect for Min/Max selection
+        // "v_speed" is 1.0f (how fast it drags)
+        // "v_min" and "v_max" enforce the 0-255 limits
+        ImGui::DragIntRange2("##roi", &m_roiMin, &m_roiMax, 1.0f, 0, 255, "Min: %d", "Max: %d");
+        
+        // Only recompress on release (this is expensive!)
+        if (ImGui::IsItemDeactivatedAfterEdit()) {
+            compressionChanged = true;
+        }
+        ImGui::Unindent();
+    }
 
     ImGui::Separator();
     
-    // --- GPU UPDATE ---
-    // Only upload to the GPU if something actually changed this frame.
-    // This prevents PCI-E bus congestion.
+    // --- UPDATES ---
+    
+    // 1. Heavy Update: Re-run the VDB compression pipeline
+    if (compressionChanged) {
+        // Pass the new integer ROI values to your compressor
+        // If m_useROI is false, you can pass dummy values or handle it inside
+        RecompressVolume(); 
+    }
+
+    // 2. Light Update: Just upload the new texture/TF
     if (tfChanged) {
         UpdateTransferFunctionOnGPU(); 
     }
 
     ImGui::End();
 
-    // Render Camera Controls (if you have them)
+    // Render Camera Controls
     camera_.renderImGuiControls();
 
     // Render ImGui
     ImGui::Render();
     ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
 
-    // Handle multiple OS windows (Viewports)
+    // Handle Viewports
     ImGuiIO& io = ImGui::GetIO();
     if (io.ConfigFlags & ImGuiConfigFlags_ViewportsEnable) {
         GLFWwindow* backup_current_context = glfwGetCurrentContext();

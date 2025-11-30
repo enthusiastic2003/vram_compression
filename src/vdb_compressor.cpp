@@ -20,28 +20,8 @@ vdb_compressor::~vdb_compressor() {
 }
 
 void vdb_compressor::compute_background_value() {
-    // [Source: 157-162] Compute histogram and find B = ARGMAX(hist)
-    
-    // Using a map to bin values (simple histogram implementation)
-    // In production, you might want more sophisticated binning for floats
-    std::map<float, size_t> histogram;
-    
-    // Iterate over all active voxels to build histogram
-    for (auto iter = m_grid->beginValueOn(); iter; ++iter) {
-        float val = *iter;
-        // Rounding to 2 decimal places to group similar floating point values
-        float key = std::round(val * 100.0f) / 100.0f; 
-        histogram[key]++;
-    }
-
-    // Find the value with the highest frequency (ARGMAX)
-    size_t max_count = 0;
-    for (const auto& pair : histogram) {
-        if (pair.second > max_count) {
-            max_count = pair.second;
-            m_background_value = pair.first;
-        }
-    }
+    std::cout << "[VDB Compress] Using grid background value as B: " << m_grid->background() << std::endl;
+    m_background_value = m_grid->background();
     
     // [Source: 163] We assume this value is the representative of empty space
 }
@@ -148,42 +128,62 @@ float vdb_compressor::calculate_f3(const BrickInfo& brick) const {
     return std::abs(median - m_background_value);
 }
 
-openvdb::FloatGrid::Ptr vdb_compressor::compress(const std::string& metric_name) {
+// UPDATED COMPRESS FUNCTION
+openvdb::FloatGrid::Ptr vdb_compressor::compress(const std::string& metric_name, bool use_roi, float roi_min, float roi_max) {
 
     // ---------------------------------------------------------
     // PRE-COMPRESSION CHECK
     // ---------------------------------------------------------
-    // Count active voxels in the original full volume
     uint64_t count_before = m_grid->activeVoxelCount();
-    std::cout << "[VDB Compress] Original Active Voxels: " << count_before << std::endl;
-
+    
     // ---------------------------------------------------------
     // PHASE 1 & 2: Analysis and Decomposition
     // ---------------------------------------------------------
-    // [cite: 157, 164] Compute B and slice volume into 32^3 bricks
+    //[cite_start]// [cite: 157, 164] Compute B and slice volume into 32^3 bricks
     compute_background_value();
     compute_brick_ranges();
 
     // ---------------------------------------------------------
-    // PHASE 3: Similarity Calculation
+    // PHASE 3: Similarity Calculation & ROI BOOST
     // ---------------------------------------------------------
-    // [cite: 176-183] Calculate score for every brick based on user choice
+    //[cite_start]// [cite: 176-183] Calculate score for every brick based on user choice
+    
+    // The Boost Multiplier: High enough to override the distance-from-background metric
+    const float ROI_BOOST_FACTOR = 255.0f; 
+
     for (auto& brick : m_bricks) {
+        // 1. Calculate Base Similarity (The Paper's Logic)
         if (metric_name == "f1") {
-            brick.similarity = calculate_f1(brick); // Closest point
+            brick.similarity = calculate_f1(brick); 
         } else if (metric_name == "f2") {
-            brick.similarity = calculate_f2(brick); // Farthest point
+            brick.similarity = calculate_f2(brick); 
         } else {
-            brick.similarity = calculate_f3(brick); // Median (Default/Superior)
+            brick.similarity = calculate_f3(brick); 
+        }
+
+        // 2. Apply ROI Extension (Your Contribution)
+        if (use_roi) {
+            // Check if this brick contains ANY values within the User's ROI.
+            // Since compute_brick_ranges() already found the min (lo) and max (hi) 
+            // for this specific brick, we can check for range overlap.
+            
+            // Logic: Overlap exists if (BrickLow <= ROIMax) AND (BrickHigh >= ROIMin)
+            bool overlaps_roi = (brick.lo <= roi_max) && (brick.hi >= roi_min);
+
+            if (overlaps_roi) {
+                // Boost the score significantly. 
+                // This forces the sort (Phase 4) to prioritize this brick 
+                // even if it is numerically close to the background.
+                brick.similarity *= ROI_BOOST_FACTOR;
+            }
         }
     }
 
     // ---------------------------------------------------------
     // PHASE 4: Sorting (The Priority Queue)
     // ---------------------------------------------------------
-    // [cite: 166, 167] Sort bricks based on similarity to background.
-    // Logic: Higher similarity score = Larger distance from background.
-    // We sort DESCENDING so the most "important" bricks are at index 0.
+    // [cite_start]// [cite: 166, 167] Sort bricks based on similarity (descending).
+    // // Because of Phase 3, ROI bricks now have huge scores and float to the top.
     std::sort(m_bricks.begin(), m_bricks.end(), 
         [](const BrickInfo& a, const BrickInfo& b) {
             return a.similarity > b.similarity; 
@@ -192,41 +192,28 @@ openvdb::FloatGrid::Ptr vdb_compressor::compress(const std::string& metric_name)
     // ---------------------------------------------------------
     // PHASE 5: Determine Fixed-Rate Cutoff
     // ---------------------------------------------------------
-    //  Map user quality (0.0 to 1.0) to exact number of bricks.
-    // This guarantees the output size fits the "fixed rate" constraint.
     size_t num_bricks_total = m_bricks.size();
     size_t bricks_to_keep = static_cast<size_t>(num_bricks_total * m_quality);
-    
-    // Clamp to valid range
     if (bricks_to_keep > num_bricks_total) bricks_to_keep = num_bricks_total;
 
     // ---------------------------------------------------------
     // PHASE 6: Synthesis (Reconstruction)
     // ---------------------------------------------------------
-    // Create new sparse grid initialized with the Background Value
     openvdb::FloatGrid::Ptr compressed_grid = openvdb::FloatGrid::create(m_background_value);
     compressed_grid->setTransform(m_grid->transform().copy());
     
-    // Use Accessors for fast, thread-safe (in concurrent contexts) read/write
     auto target_acc = compressed_grid->getAccessor();
     auto source_acc = m_grid->getAccessor();
-
-    // [cite: 196] Iterate over sorted list and only process the "kept" bricks
     const int BRICK_DIM = 32;
 
     for (size_t i = 0; i < bricks_to_keep; ++i) {
         const auto& brick = m_bricks[i];
         
-        //  "Activate all the voxels... of that brick"
-        // We iterate the local 32x32x32 space of the brick
         for (int z = 0; z < BRICK_DIM; ++z) {
             for (int y = 0; y < BRICK_DIM; ++y) {
                 for (int x = 0; x < BRICK_DIM; ++x) {
-                    // Calculate global coordinate
                     openvdb::Coord c = brick.origin.offsetBy(x, y, z);
                     
-                    // Critical: We only copy if the source actually has data.
-                    // This preserves the inherent sparsity of the original volume.
                     if (source_acc.isValueOn(c)) {
                         target_acc.setValue(c, source_acc.getValue(c));
                     }
@@ -236,22 +223,17 @@ openvdb::FloatGrid::Ptr vdb_compressor::compress(const std::string& metric_name)
     }
 
     // ---------------------------------------------------------
-    // PHASE 7: Optimization
+    // PHASE 7: Optimization & Stats
     // ---------------------------------------------------------
-    //  Collapse constant branches to minimize memory footprint
     compressed_grid->tree().prune();
-
-    // ---------------------------------------------------------
-    // POST-COMPRESSION CHECK
-    // ---------------------------------------------------------
-    // Count active voxels in the new compressed volume
-    uint64_t count_after = compressed_grid->activeVoxelCount();
     
-    // Calculate actual compression ratio
-    float ratio = 100.0f * static_cast<float>(count_after) / static_cast<float>(count_before);
+    // Optional: Debug output to confirm ROI usage
+    if (use_roi) {
+        std::cout << "[VDB Compress] Applied ROI Boost [" << roi_min << ", " << roi_max << "]" << std::endl;
+    }
 
-    std::cout << "[VDB Compress] Compressed Active Voxels: " << count_after << std::endl;
-    std::cout << "[VDB Compress] Actual Data Retention: " << ratio << "%" << std::endl;
+    uint64_t count_after = compressed_grid->activeVoxelCount();
+    std::cout << "[VDB Compress] Final Voxel Count: " << count_after << std::endl;
 
     return compressed_grid;
 }
