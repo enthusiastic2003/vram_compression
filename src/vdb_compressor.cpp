@@ -2,8 +2,8 @@
 #include <map>
 #include <cmath>
 #include <limits>
-#include <algorithm> // For std::max, std::min
-#include <cmath>     // For std::abs
+#include <algorithm> // For std::max, std::min, std::sort
+#include <vector>
 
 
 vdb_compressor::vdb_compressor(openvdb::FloatGrid::Ptr grid, float quality)
@@ -57,13 +57,11 @@ void vdb_compressor::compute_brick_ranges() {
                 BrickInfo brick;
                 brick.origin = openvdb::Coord(x, y, z);
                 
-                // Initialize range to inverse extremes
-                brick.lo = std::numeric_limits<float>::max();
-                brick.hi = std::numeric_limits<float>::lowest();
-                
-                bool has_active_content = false;
+                // Collect all active voxel values in this brick
+                std::vector<float> values;
+                values.reserve(BRICK_DIM * BRICK_DIM * BRICK_DIM);
 
-                // 3. Scan the 32x32x32 region to find min/max (lo/hi) [Source: 165]
+                // 3. Scan the 32x32x32 region to collect all values
                 for (int bz = 0; bz < BRICK_DIM; ++bz) {
                     for (int by = 0; by < BRICK_DIM; ++by) {
                         for (int bx = 0; bx < BRICK_DIM; ++bx) {
@@ -74,25 +72,53 @@ void vdb_compressor::compute_brick_ranges() {
                             // [Source: 150] We sample at exact integer voxel positions
                             if (accessor.isValueOn(c)) {
                                 float val = accessor.getValue(c);
-                                
-                                // Update Range
-                                if (val < brick.lo) brick.lo = val;
-                                if (val > brick.hi) brick.hi = val;
-                                
-                                has_active_content = true;
+                                values.push_back(val);
                             }
                         }
                     }
                 }
 
                 // Only store bricks that actually contain data.
-                // Bricks that are completely empty are implicitly handled as background later.
-                if (has_active_content) {
+                if (!values.empty()) {
+                    // Sort values to compute percentiles
+                    std::sort(values.begin(), values.end());
+                    
+                    // Calculate 5th percentile (lower bound, excluding bottom 5%)
+                    size_t idx_low = static_cast<size_t>(values.size() * 0.05);
+                    if (idx_low >= values.size()) idx_low = 0;
+                    
+                    // Calculate 95th percentile (upper bound, excluding top 5%)
+                    size_t idx_high = static_cast<size_t>(values.size() * 0.95);
+                    if (idx_high >= values.size()) idx_high = values.size() - 1;
+                    
+                    // Set the range based on 90% of data (5th to 95th percentile)
+                    brick.lo = values[idx_low];
+                    brick.hi = values[idx_high];
+                    
                     m_bricks.push_back(brick);
+                    
+                    // Debug output for significant outlier cases
+                    if (values.size() > 10) {
+                        float actual_min = values[0];
+                        float actual_max = values[values.size() - 1];
+                        float outlier_range = std::max(
+                            std::abs(actual_min - brick.lo),
+                            std::abs(actual_max - brick.hi)
+                        );
+                        
+                        // if (outlier_range > 0.1f * (brick.hi - brick.lo)) {
+                        //     std::cout << "[VDB Compress] Brick at " << brick.origin 
+                        //               << " has outliers. Actual: [" << actual_min << ", " << actual_max 
+                        //               << "], 90%: [" << brick.lo << ", " << brick.hi << "]" << std::endl;
+                        // }
+                    }
                 }
             }
         }
     }
+    
+    std::cout << "[VDB Compress] Computed ranges for " << m_bricks.size() 
+              << " bricks using 95th percentile (2.5% - 97.5%)" << std::endl;
 }
 
 
@@ -139,17 +165,20 @@ openvdb::FloatGrid::Ptr vdb_compressor::compress(const std::string& metric_name,
     // ---------------------------------------------------------
     // PHASE 1 & 2: Analysis and Decomposition
     // ---------------------------------------------------------
-    //[cite_start]// [cite: 157, 164] Compute B and slice volume into 32^3 bricks
+    // [cite: 157, 164] Compute B and slice volume into 32^3 bricks
     compute_background_value();
     compute_brick_ranges();
 
     // ---------------------------------------------------------
     // PHASE 3: Similarity Calculation & ROI BOOST
     // ---------------------------------------------------------
-    //[cite_start]// [cite: 176-183] Calculate score for every brick based on user choice
+    // [cite: 176-183] Calculate score for every brick based on user choice
     
     // The Boost Multiplier: High enough to override the distance-from-background metric
     const float ROI_BOOST_FACTOR = 255.0f; 
+
+    float bricks_max = std::numeric_limits<float>::lowest();
+    float bricks_min = std::numeric_limits<float>::max();
 
     for (auto& brick : m_bricks) {
         // 1. Calculate Base Similarity (The Paper's Logic)
@@ -161,29 +190,36 @@ openvdb::FloatGrid::Ptr vdb_compressor::compress(const std::string& metric_name,
             brick.similarity = calculate_f3(brick); 
         }
 
+        // Track min and max similarity for debugging or normalization
+        if (brick.similarity > bricks_max) bricks_max = brick.similarity;
+        if (brick.similarity < bricks_min) bricks_min = brick.similarity;
+
         // 2. Apply ROI Extension (Your Contribution)
         if (use_roi) {
             // Check if this brick contains ANY values within the User's ROI.
-            // Since compute_brick_ranges() already found the min (lo) and max (hi) 
+            // Since compute_brick_ranges() already found the percentile-based range
             // for this specific brick, we can check for range overlap.
             
             // Logic: Overlap exists if (BrickLow <= ROIMax) AND (BrickHigh >= ROIMin)
-            bool overlaps_roi = (brick.lo <= roi_max) && (brick.hi >= roi_min);
+            bool overlaps_roi = (brick.hi <= roi_max) && (brick.lo >= roi_min);
 
             if (overlaps_roi) {
                 // Boost the score significantly. 
                 // This forces the sort (Phase 4) to prioritize this brick 
                 // even if it is numerically close to the background.
-                brick.similarity *= ROI_BOOST_FACTOR;
+                std::cout<< "[VDB Compress] ROI Overlap Detected for Brick at "<<brick.origin<<" (95% Range: ["<<brick.lo<<", "<<brick.hi<<"])"<<std::endl;
+                brick.similarity += ROI_BOOST_FACTOR;
             }
         }
     }
 
+    std::cout << "[VDB Compress] Similarity Range: [" << bricks_min << ", " << bricks_max << "]" << std::endl;
+
     // ---------------------------------------------------------
     // PHASE 4: Sorting (The Priority Queue)
     // ---------------------------------------------------------
-    // [cite_start]// [cite: 166, 167] Sort bricks based on similarity (descending).
-    // // Because of Phase 3, ROI bricks now have huge scores and float to the top.
+    // [cite: 166, 167] Sort bricks based on similarity (descending).
+    // Because of Phase 3, ROI bricks now have huge scores and float to the top.
     std::sort(m_bricks.begin(), m_bricks.end(), 
         [](const BrickInfo& a, const BrickInfo& b) {
             return a.similarity > b.similarity; 

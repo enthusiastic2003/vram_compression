@@ -657,7 +657,8 @@ void Renderer::renderUI() {
 
     // Build Professional Transfer Function Editor
     ImGui::Begin("Transfer Function Editor", nullptr, ImGuiWindowFlags_NoCollapse);
-    
+    ImGui::Text("FPS: %.1f (%.2f ms)", m_fps, 1000.0f / (m_fps > 0 ? m_fps : 1.0f));
+ImGui::Separator();
     // Header with description
     ImGui::TextColored(ImVec4(0.4f, 0.8f, 1.0f, 1.0f), "Volume Color Mapping");
     ImGui::TextWrapped("Adjust how density values map to color and opacity for volume rendering.");
@@ -726,12 +727,12 @@ void Renderer::renderUI() {
 
     if (m_useROI) {
         ImGui::Indent();
-        ImGui::Text("Interest Range (0-255)");
+        ImGui::Text("Interest Range (0-1)");
         
         // DragIntRange2 is perfect for Min/Max selection
         // "v_speed" is 1.0f (how fast it drags)
         // "v_min" and "v_max" enforce the 0-255 limits
-        ImGui::DragIntRange2("##roi", &m_roiMin, &m_roiMax, 1.0f, 0, 255, "Min: %d", "Max: %d");
+        ImGui::DragFloatRange2("##roi", &m_roiMin, &m_roiMax, 1.0f, 0.0F, 1.0F, "Min: %.2f", "Max: %.2f");
         
         // Only recompress on release (this is expensive!)
         if (ImGui::IsItemDeactivatedAfterEdit()) {
@@ -782,6 +783,16 @@ void Renderer::run() {
         float currentFrame = glfwGetTime();
         float deltaTime = currentFrame - lastFrame;
         lastFrame = currentFrame;
+
+        // FPS Calculation
+        m_frameTimeAccumulator += deltaTime;
+        m_frameCount++;
+        
+        if (m_frameTimeAccumulator >= 0.5f) { // Update FPS every 0.5 seconds
+            m_fps = m_frameCount / m_frameTimeAccumulator;
+            m_frameTimeAccumulator = 0.0f;
+            m_frameCount = 0;
+        }
 
         glfwPollEvents();
 

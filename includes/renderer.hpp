@@ -31,7 +31,10 @@ public:
     void run();
 
 private:
-    
+    // Add these member variables (likely in renderer.hpp)
+    float m_fps = 0.0f;
+    float m_frameTimeAccumulator = 0.0f;
+    int m_frameCount = 0;
         
     // Core members
     GLFWwindow* window;
@@ -44,8 +47,8 @@ private:
     cudaTextureObject_t m_tfTexture = 0;
     cudaArray_t m_tfArray = nullptr;    
     // Inside Renderer.h
-    int m_roiMin = 40;     // Default start of soft tissue (example)
-    int m_roiMax = 80;     // Default end of soft tissue (example)
+    float m_roiMin = 0.0f;     // Default start of soft tissue (example)
+    float m_roiMax = 0.4f;     // Default end of soft tissue (example)
     bool m_useROI = false; // Toggle for your extension
 
     // Shader for displaying CUDA output
