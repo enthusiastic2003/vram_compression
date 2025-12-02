@@ -17,7 +17,7 @@ int main(int argc, char* argv[])
         return -1;
     }
 
-    Renderer renderer(1280, 720, "Voxel Renderer");
+    Renderer renderer( std::string(vtkFilePath) ,1280, 900, "Voxel Renderer");
     if (renderer.initialize(voxelData) == false) {
         std::cerr << "Failed to initialize renderer\n";
         return -1;

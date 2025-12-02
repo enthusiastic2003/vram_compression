@@ -4,3 +4,5 @@ obj
 data/
 build/
 bin/
+.venv/
+visual_examination_tools/*.png

@@ -107,9 +107,19 @@ void Renderer::displayQualityMetrics() {
         ImGui::Spacing();
         if (ImGui::Button("Save Screenshot for Metrics", ImVec2(-1, 0))) {
             // Generate a filename with timestamp or ID
-            static int captureCount = 0;
+            std::string metricName;
+            switch(m_selectedMetric) {
+                case 0: metricName = "f1"; break;
+                case 1: metricName = "f2"; break;
+                case 2: metricName = "f3"; break;
+                default: metricName = "unknown";
+            }
             std::stringstream ss;
-            ss << "render_capture_" << captureCount++ << ".png";
+
+            ss << m_datasetName << "_" 
+               << metricName << "_" 
+               << std::fixed << std::setprecision(2) << m_compressionQuality 
+               << ".png";
             
             // Call our helper using the renderer's texture and dimensions
             SaveTextureToPNG(m_cudaOutputTex, width_, height_, ss.str().c_str());
@@ -221,7 +231,7 @@ bool Renderer::initialize(std::shared_ptr<VoxelLoader> loader) {
     glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GL_TRUE);
 #endif
 
-    window = glfwCreateWindow(1280, 720, "CUDA Volume Ray Marcher", nullptr, nullptr);
+    window = glfwCreateWindow(width_, height_, "CUDA Volume Ray Marcher", nullptr, nullptr);
     if (!window) {
         std::cerr << "Failed to create GLFW window\n";
         glfwTerminate();

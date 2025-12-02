@@ -19,11 +19,27 @@ struct ImVec2;
 
 class Renderer {
 public:
-    Renderer(int width, int height, const char* title)
+    Renderer(std::string path, int width, int height, const char* title)
         : width_(width), height_(height), title_(title),
           window(nullptr),
           camera_(3.0f, 45.0f)  // distance=3, fov=45
-    {}
+    {
+        std::string tempName = path;
+
+        // 1. Remove the extension (e.g., ".vtk")
+        size_t lastDot = tempName.find_last_of(".");
+        if (lastDot != std::string::npos) {
+            tempName = tempName.substr(0, lastDot);
+        }
+
+        // 2. Remove the folder path (handles both / and \)
+        size_t lastSlash = tempName.find_last_of("/\\");
+        if (lastSlash != std::string::npos) {
+            tempName = tempName.substr(lastSlash + 1);
+        }
+
+        m_datasetName = tempName;
+    }
 
     ~Renderer();
 
@@ -74,6 +90,7 @@ private:
     openvdb::FloatGrid::Ptr m_originalGrid; // Backup of the original dense data
     float m_compressionQuality = 0.2f;      // 0.0 to 1.0 (Higher = Less Compression)
     int m_selectedMetric = 1;               // 0=f1, 1=f2, 2=f3
+    std::string m_datasetName = "scan";    // Dataset identifier for saving screenshots
 
     // Helper to handle CPU compression -> NanoVDB conversion -> GPU Upload
     void RecompressVolume();
