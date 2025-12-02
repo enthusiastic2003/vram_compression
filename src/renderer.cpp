@@ -13,7 +13,8 @@
 #include "cuda_helpers.hpp"
 #include "vdb_compressor.h"
 #include "metrics.h" // <--- ADD THIS
-
+#define STB_IMAGE_WRITE_IMPLEMENTATION
+#include "stb_image_write.h" // For saving PNGs
 Renderer::~Renderer() {
     FreeVDB(m_deviceHandle);
     ImGui_ImplOpenGL3_Shutdown();
@@ -24,6 +25,43 @@ Renderer::~Renderer() {
     }
     glfwTerminate();
 
+}
+
+
+static void SaveTextureToPNG(GLuint textureID, int width, int height, const char* filename) {
+    // 1. Allocate buffer for float pixels (RGBA32F)
+    std::vector<float> pixels(width * height * 4);
+    
+    // 2. Read texture from GPU
+    glBindTexture(GL_TEXTURE_2D, textureID);
+    glGetTexImage(GL_TEXTURE_2D, 0, GL_RGBA, GL_FLOAT, pixels.data());
+    glBindTexture(GL_TEXTURE_2D, 0);
+
+    // 3. Convert Float (0.0-1.0) to Byte (0-255)
+    // We strip Alpha channel for standard image viewing/metrics
+    std::vector<unsigned char> pngData(width * height * 3);
+    for (int i = 0; i < width * height; ++i) {
+        float r = pixels[i * 4 + 0];
+        float g = pixels[i * 4 + 1];
+        float b = pixels[i * 4 + 2];
+        
+        // Simple tone mapping / clamping
+        r = std::min(1.0f, std::max(0.0f, r));
+        g = std::min(1.0f, std::max(0.0f, g));
+        b = std::min(1.0f, std::max(0.0f, b));
+
+        pngData[i * 3 + 0] = static_cast<unsigned char>(r * 255.99f);
+        pngData[i * 3 + 1] = static_cast<unsigned char>(g * 255.99f);
+        pngData[i * 3 + 2] = static_cast<unsigned char>(b * 255.99f);
+    }
+
+    // 4. Write to disk
+    // Stride is width * 3 bytes
+    if (stbi_write_png(filename, width, height, 3, pngData.data(), width * 3)) {
+        std::cout << "Saved screenshot to: " << filename << std::endl;
+    } else {
+        std::cerr << "Failed to save screenshot: " << filename << std::endl;
+    }
 }
 
 void Renderer::glfw_error_callback(int error, const char* description) {
@@ -64,6 +102,22 @@ void Renderer::displayQualityMetrics() {
         if (ImGui::Button("Calculate MSE/PSNR", ImVec2(-1, 0))) {
             evaluateCompressionQuality();
         }
+
+        // --- INSERT THIS CODE BLOCK HERE ---
+        ImGui::Spacing();
+        if (ImGui::Button("Save Screenshot for Metrics", ImVec2(-1, 0))) {
+            // Generate a filename with timestamp or ID
+            static int captureCount = 0;
+            std::stringstream ss;
+            ss << "render_capture_" << captureCount++ << ".png";
+            
+            // Call our helper using the renderer's texture and dimensions
+            SaveTextureToPNG(m_cudaOutputTex, width_, height_, ss.str().c_str());
+        }
+        if (ImGui::IsItemHovered()) {
+            ImGui::SetTooltip("Save the current view as a lossless PNG to run Python metrics (FLIP/SSIM).");
+        }
+        // -----------------------------------
         
         if (ImGui::IsItemHovered()) {
             ImGui::SetTooltip("Calculate Mean Squared Error and Peak Signal-to-Noise Ratio between original and compressed volumes");
