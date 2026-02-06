@@ -57,7 +57,7 @@ src/                    # Application sources (entry point in main.cpp)
 includes/               # Core headers (renderer, loader, metrics, camera, shaders)
 packages/               # Third-party dependencies (glad, imgui, glm, etc.)
 shaders/                # GLSL shader programs copied into bin/<build>/shaders/
-visual_examination_tools# Auxiliary inspection utilities
+visual_examination_tools # Auxiliary inspection utilities
 ```
 
 ## Development
